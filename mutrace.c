@@ -49,7 +49,7 @@ struct mutex_info {
         struct mutex_info *next;
 };
 
-static unsigned long hash_size = 557;
+static unsigned long hash_size = 3371; /* probably a good idea to pick a prime here */
 static unsigned long frames_max = 16;
 
 static volatile unsigned n_broken = 0;
@@ -179,11 +179,8 @@ static unsigned long mutex_hash(pthread_mutex_t *mutex) {
         unsigned long u;
 
         u = (unsigned long) mutex;
-        do {
-                u = (u % hash_size) ^ (u / hash_size);
-        } while (u > hash_size);
-
-        return u;
+        u /= sizeof(void*);
+        return u % hash_size;
 }
 
 static void lock_hash_mutex(unsigned u) {
