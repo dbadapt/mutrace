@@ -421,7 +421,7 @@ static void show_summary(void) {
 
                 if (i < n)
                         fprintf(stderr,
-                                "     ...      ...      ...      ...          ...          ...          ...\n");
+                                "     ...      ...      ...      ...          ...          ...          ...        ...\n");
         } else
                 fprintf(stderr,
                         "\n"
