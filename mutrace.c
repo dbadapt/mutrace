@@ -652,10 +652,10 @@ int pthread_mutex_trylock(pthread_mutex_t *mutex) {
         int r;
 
         r = real_pthread_mutex_trylock(mutex);
-        if (r != EBUSY && r != 0)
-                return r;
 
-        mutex_lock(mutex, r == EBUSY);
+        if (r == 0)
+                mutex_lock(mutex, false);
+
         return r;
 }
 
