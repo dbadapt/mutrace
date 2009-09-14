@@ -47,8 +47,6 @@
 #define DEBUG_TRAP raise(SIGTRAP)
 #endif
 
-typedef void (*fnptr_t)(void);
-
 struct mutex_info {
         pthread_mutex_t *mutex;
 
@@ -110,17 +108,6 @@ static uint64_t nsec_timestamp_setup;
 static void setup(void) __attribute ((constructor));
 static void shutdown(void) __attribute ((destructor));
 
-/* dlsym() violates ISO C, so confide the breakage into this function
- * to avoid warnings. */
-
-static inline fnptr_t dlsym_fn(void *handle, const char *symbol, const char *version) {
-
-        if (version)
-                return (fnptr_t) (long) dlvsym(handle, symbol, version);
-        else
-                return (fnptr_t) (long) dlsym(handle, symbol);
-}
-
 static pid_t _gettid(void) {
         return (pid_t) syscall(SYS_gettid);
 }
@@ -158,9 +145,15 @@ static int parse_env(const char *n, unsigned *t) {
         return 0;
 }
 
-#define LOAD_FUNC(name, ret, args, version)                             \
+#define LOAD_FUNC(name)                                                 \
         do {                                                            \
-                real_##name = (ret (*) args) dlsym_fn(RTLD_NEXT, #name, version); \
+                *(void**) (&real_##name) = dlsym(RTLD_NEXT, #name);     \
+                assert(real_##name);                                    \
+        } while (false)
+
+#define LOAD_FUNC_VERSIONED(name, version)                              \
+        do {                                                            \
+                *(void**) (&real_##name) = dlvsym(RTLD_NEXT, #name, version); \
                 assert(real_##name);                                    \
         } while (false)
 
@@ -169,17 +162,21 @@ static void setup(void) {
         int r;
         unsigned t;
 
-        LOAD_FUNC(pthread_mutex_init, int, (pthread_mutex_t *mutex, const pthread_mutexattr_t *mutexattr), NULL);
-        LOAD_FUNC(pthread_mutex_destroy, int, (pthread_mutex_t *mutex), NULL);
-        LOAD_FUNC(pthread_mutex_lock, int, (pthread_mutex_t *mutex), NULL);
-        LOAD_FUNC(pthread_mutex_trylock, int, (pthread_mutex_t *mutex), NULL);
-        LOAD_FUNC(pthread_mutex_timedlock, int, (pthread_mutex_t *mutex, const struct timespec *abstime), NULL);
-        LOAD_FUNC(pthread_mutex_unlock, int, (pthread_mutex_t *mutex), NULL);
-        LOAD_FUNC(pthread_cond_wait, int, (pthread_cond_t *cond, pthread_mutex_t *mutex), "GLIBC_2.3.2");
-        LOAD_FUNC(pthread_cond_timedwait, int, (pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *abstime), "GLIBC_2.3.2");
-        LOAD_FUNC(exit, void, (int status), NULL);
-        LOAD_FUNC(_exit, void, (int status), NULL);
-        LOAD_FUNC(_Exit, void, (int status), NULL);
+        LOAD_FUNC(pthread_mutex_init);
+        LOAD_FUNC(pthread_mutex_destroy);
+        LOAD_FUNC(pthread_mutex_lock);
+        LOAD_FUNC(pthread_mutex_trylock);
+        LOAD_FUNC(pthread_mutex_timedlock);
+        LOAD_FUNC(pthread_mutex_unlock);
+
+        /* There's some kind of weird incompatibility problem if we
+         * don't ask for this explicit version of these functions */
+        LOAD_FUNC_VERSIONED(pthread_cond_wait, "GLIBC_2.3.2");
+        LOAD_FUNC_VERSIONED(pthread_cond_timedwait, "GLIBC_2.3.2");
+
+        LOAD_FUNC(exit);
+        LOAD_FUNC(_exit);
+        LOAD_FUNC(_Exit);
 
         t = hash_size;
         if (parse_env("MUTRACE_HASH_SIZE", &t) < 0 || t <= 0)
