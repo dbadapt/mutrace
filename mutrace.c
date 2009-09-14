@@ -97,6 +97,7 @@ static int (*real_pthread_mutex_unlock)(pthread_mutex_t *mutex) = NULL;
 static int (*real_pthread_cond_wait)(pthread_cond_t *cond, pthread_mutex_t *mutex) = NULL;
 static int (*real_pthread_cond_timedwait)(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *abstime) = NULL;
 static void (*real_exit)(int status) __attribute__((noreturn)) = NULL;
+static void (*real__exit)(int status) __attribute__((noreturn)) = NULL;
 static void (*real__Exit)(int status) __attribute__((noreturn)) = NULL;
 
 static struct mutex_info **alive_mutexes = NULL, **dead_mutexes = NULL;
@@ -157,32 +158,28 @@ static int parse_env(const char *n, unsigned *t) {
         return 0;
 }
 
+#define LOAD_FUNC(name, ret, args, version)                             \
+        do {                                                            \
+                real_##name = (ret (*) args) dlsym_fn(RTLD_NEXT, #name, version); \
+                assert(real_##name);                                    \
+        } while (false)
+
 static void setup(void) {
         pthread_mutex_t *m, *last;
         int r;
         unsigned t;
 
-        real_pthread_mutex_init = dlsym_fn(RTLD_NEXT, "pthread_mutex_init", NULL);
-        real_pthread_mutex_destroy = dlsym_fn(RTLD_NEXT, "pthread_mutex_destroy", NULL);
-        real_pthread_mutex_lock = dlsym_fn(RTLD_NEXT, "pthread_mutex_lock", NULL);
-        real_pthread_mutex_trylock = dlsym_fn(RTLD_NEXT, "pthread_mutex_trylock", NULL);
-        real_pthread_mutex_timedlock = dlsym_fn(RTLD_NEXT, "pthread_mutex_timedlock", NULL);
-        real_pthread_mutex_unlock = dlsym_fn(RTLD_NEXT, "pthread_mutex_unlock", NULL);
-        real_pthread_cond_wait = dlsym_fn(RTLD_NEXT, "pthread_cond_wait", "GLIBC_2.3.2");
-        real_pthread_cond_timedwait = dlsym_fn(RTLD_NEXT, "pthread_cond_timedwait", "GLIBC_2.3.2");
-        real_exit = dlsym_fn(RTLD_NEXT, "exit", NULL);
-        real__Exit = dlsym_fn(RTLD_NEXT, "_Exit", NULL);
-
-        assert(real_pthread_mutex_init);
-        assert(real_pthread_mutex_destroy);
-        assert(real_pthread_mutex_lock);
-        assert(real_pthread_mutex_trylock);
-        assert(real_pthread_mutex_timedlock);
-        assert(real_pthread_mutex_unlock);
-        assert(real_pthread_cond_wait);
-        assert(real_pthread_cond_timedwait);
-        assert(real_exit);
-        assert(real__Exit);
+        LOAD_FUNC(pthread_mutex_init, int, (pthread_mutex_t *mutex, const pthread_mutexattr_t *mutexattr), NULL);
+        LOAD_FUNC(pthread_mutex_destroy, int, (pthread_mutex_t *mutex), NULL);
+        LOAD_FUNC(pthread_mutex_lock, int, (pthread_mutex_t *mutex), NULL);
+        LOAD_FUNC(pthread_mutex_trylock, int, (pthread_mutex_t *mutex), NULL);
+        LOAD_FUNC(pthread_mutex_timedlock, int, (pthread_mutex_t *mutex, const struct timespec *abstime), NULL);
+        LOAD_FUNC(pthread_mutex_unlock, int, (pthread_mutex_t *mutex), NULL);
+        LOAD_FUNC(pthread_cond_wait, int, (pthread_cond_t *cond, pthread_mutex_t *mutex), "GLIBC_2.3.2");
+        LOAD_FUNC(pthread_cond_timedwait, int, (pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *abstime), "GLIBC_2.3.2");
+        LOAD_FUNC(exit, void, (int status), NULL);
+        LOAD_FUNC(_exit, void, (int status), NULL);
+        LOAD_FUNC(_Exit, void, (int status), NULL);
 
         t = hash_size;
         if (parse_env("MUTRACE_HASH_SIZE", &t) < 0 || t <= 0)
@@ -487,6 +484,11 @@ static void shutdown(void) {
 }
 
 void exit(int status) {
+        show_summary();
+        real_exit(status);
+}
+
+void _exit(int status) {
         show_summary();
         real_exit(status);
 }
