@@ -19,8 +19,15 @@
 /* FIXMES:
  *
  *   - we probably should cover rwlocks, too
+ *   - and conds, too!
  *
  */
+
+#if defined(__i386__) || defined(__x86_64__)
+#define DEBUG_TRAP __asm__("int $3")
+#else
+#define DEBUG_TRAP raise(SIGTRAP)
+#endif
 
 typedef void (*fnptr_t)(void);
 
@@ -60,6 +67,8 @@ static unsigned show_n_locked_min = 1;
 static unsigned show_n_owner_changed_min = 2;
 static unsigned show_n_contended_min = 0;
 static unsigned show_n_max = 10;
+
+static bool raise_trap = false;
 
 static int (*real_pthread_mutex_init)(pthread_mutex_t *mutex, const pthread_mutexattr_t *mutexattr) = NULL;
 static int (*real_pthread_mutex_destroy)(pthread_mutex_t *mutex) = NULL;
@@ -609,6 +618,9 @@ static void mutex_lock(pthread_mutex_t *mutex, bool busy) {
         if (mi->n_lock_level > 0 && mi->type != PTHREAD_MUTEX_RECURSIVE) {
                 __sync_fetch_and_add(&n_broken, 1);
                 mi->broken = true;
+
+                if (raise_trap)
+                        DEBUG_TRAP;
         }
 
         mi->n_lock_level++;
@@ -695,6 +707,9 @@ static void mutex_unlock(pthread_mutex_t *mutex) {
         if (mi->n_lock_level <= 0) {
                 __sync_fetch_and_add(&n_broken, 1);
                 mi->broken = true;
+
+                if (raise_trap)
+                        DEBUG_TRAP;
         }
 
         mi->n_lock_level--;
