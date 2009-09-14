@@ -270,7 +270,7 @@ static void mutex_info_stat(struct mutex_info *mi) {
                 return;
 
         fprintf(stderr,
-                "%8u %8u %8u %8u %12.3f %12.3f %12.3f%s\n",
+                "%8u %8u %8u %8u %12.3f %12.3f %12.3f%s%s\n",
                 mi->id,
                 mi->n_locked,
                 mi->n_owner_changed,
@@ -278,7 +278,8 @@ static void mutex_info_stat(struct mutex_info *mi) {
                 (double) mi->nsec_locked_total / 1000000.0,
                 (double) mi->nsec_locked_total / mi->n_locked / 1000000.0,
                 (double) mi->nsec_locked_max / 1000000.0,
-                mi->broken ? " inconsistent!" : "");
+                mi->broken ? " (inconsistent)" : "",
+                mi->is_recursive ? " (recursive)" : "");
 }
 
 static void show_summary(void) {
@@ -453,7 +454,7 @@ static char* generate_stacktrace(void) {
         return ret;
 }
 
-static struct mutex_info *mutex_info_add(unsigned long u, pthread_mutex_t *mutex) {
+static struct mutex_info *mutex_info_add(unsigned long u, pthread_mutex_t *mutex, bool is_recursive) {
         struct mutex_info *mi;
 
         /* Needs external locking */
@@ -465,6 +466,7 @@ static struct mutex_info *mutex_info_add(unsigned long u, pthread_mutex_t *mutex
         assert(mi);
 
         mi->mutex = mutex;
+        mi->is_recursive = is_recursive;
         mi->stacktrace = generate_stacktrace();
 
         mi->next = alive_mutexes[u];
@@ -505,7 +507,7 @@ static struct mutex_info *mutex_info_acquire(pthread_mutex_t *mutex) {
                 if (mi->mutex == mutex)
                         return mi;
 
-        return mutex_info_add(u, mutex);
+        return mutex_info_add(u, mutex, false);
 }
 
 static void mutex_info_release(pthread_mutex_t *mutex) {
@@ -524,12 +526,24 @@ int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *mutexa
                 return r;
 
         if (!recursive) {
+                bool is_recursive = false;
+
                 recursive = true;
                 u = mutex_hash(mutex);
                 lock_hash_mutex(u);
 
                 mutex_info_remove(u, mutex);
-                mutex_info_add(u, mutex);
+
+                if (mutexattr) {
+                        int type = 0, k;
+
+                        k = pthread_mutexattr_gettype(mutexattr, &type);
+                        assert(k == 0);
+
+                        is_recursive = type == PTHREAD_MUTEX_RECURSIVE_NP;
+                }
+
+                mutex_info_add(u, mutex, is_recursive);
 
                 unlock_hash_mutex(u);
                 recursive = false;
@@ -561,7 +575,7 @@ static void mutex_lock(pthread_mutex_t *mutex, bool busy) {
         recursive = true;
         mi = mutex_info_acquire(mutex);
 
-        if (mi->n_lock_level > 0) {
+        if (mi->n_lock_level > 0 && !mi->is_recursive) {
                 __sync_fetch_and_add(&n_broken, 1);
                 mi->broken = true;
         }
