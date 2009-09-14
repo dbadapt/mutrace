@@ -59,6 +59,7 @@ static volatile unsigned n_self_contended = 0;
 static unsigned show_n_locked_min = 1;
 static unsigned show_n_owner_changed_min = 2;
 static unsigned show_n_contended_min = 0;
+static unsigned show_n_max = 10;
 
 static int (*real_pthread_mutex_init)(pthread_mutex_t *mutex, const pthread_mutexattr_t *mutexattr) = NULL;
 static int (*real_pthread_mutex_destroy)(pthread_mutex_t *mutex) = NULL;
@@ -251,20 +252,22 @@ static bool mutex_info_show(struct mutex_info *mi) {
         return true;
 }
 
-static void mutex_info_dump(struct mutex_info *mi) {
+static bool mutex_info_dump(struct mutex_info *mi) {
 
         if (!mutex_info_show(mi))
-                return;
+                return false;
 
         fprintf(stderr,
                 "\nMutex #%u (0x%p) first referenced by:\n"
                 "%s", mi->id, mi->mutex, mi->stacktrace);
+
+        return true;
 }
 
-static void mutex_info_stat(struct mutex_info *mi) {
+static bool mutex_info_stat(struct mutex_info *mi) {
 
         if (!mutex_info_show(mi))
-                return;
+                return false;
 
         fprintf(stderr,
                 "%8u %8u %8u %8u %12.3f %12.3f %12.3f%s%s\n",
@@ -275,8 +278,10 @@ static void mutex_info_stat(struct mutex_info *mi) {
                 (double) mi->nsec_locked_total / 1000000.0,
                 (double) mi->nsec_locked_total / mi->n_locked / 1000000.0,
                 (double) mi->nsec_locked_max / 1000000.0,
-                mi->broken ? " (inconsistent)" : "",
+                mi->broken ? " (inconsistent!)" : "",
                 mi->is_recursive ? " (recursive)" : "");
+
+        return true;
 }
 
 static void show_summary(void) {
@@ -284,7 +289,7 @@ static void show_summary(void) {
         static bool shown_summary = false;
 
         struct mutex_info *mi, **table;
-        unsigned n, u, i;
+        unsigned n, u, i, m;
         uint64_t t;
 
         real_pthread_mutex_lock(&summary_mutex);
@@ -332,16 +337,22 @@ static void show_summary(void) {
         }
         assert(i == n);
 
-        for (i = 0; i < n; i++)
-                mutex_info_dump(table[i]);
-
         qsort(table, n, sizeof(table[0]), mutex_info_compare);
 
-        fprintf(stderr,
-                "\n Mutex #   Locked  Changed    Cont. tot.Time[ms] avg.Time[ms] max.Time[ms]\n");
+        for (i = 0, m = 0; i < n && m < show_n_max; i++)
+                m += mutex_info_dump(table[i]) ? 1 : 0;
 
-        for (i = 0; i < n; i++)
-                mutex_info_stat(table[i]);
+        fprintf(stderr,
+                "\n"
+                " Mutex #   Locked  Changed    Cont. tot.Time[ms] avg.Time[ms] max.Time[ms]\n");
+
+        for (i = 0, m = 0; i < n && m < show_n_max; i++)
+                m += mutex_info_stat(table[i]) ? 1 : 0;
+
+
+        if (i < n)
+                fprintf(stderr,
+                        "     ...      ...      ...      ...          ...          ...          ...\n");
 
         free(table);
 
