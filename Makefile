@@ -1,5 +1,5 @@
 SONAME=libmutrace.so
-CFLAGS=-Wextra -Wall -O0 -g -DPACKAGE_VERSION=\"0.1\" -fPIC -DSONAME=\"$(SONAME)\"
+CFLAGS=-pipe -pthread -Wextra -Wall -O0 -g -DPACKAGE_VERSION=\"0.1\" -fPIC -DSONAME=\"$(SONAME)\"
 LIBS=-lrt -ldl
 
 $(SONAME): mutrace.o
