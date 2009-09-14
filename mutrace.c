@@ -407,20 +407,25 @@ static void show_summary(void) {
         for (i = 0, m = 0; i < n && m < show_n_max; i++)
                 m += mutex_info_dump(table[i]) ? 1 : 0;
 
-        fprintf(stderr,
-                "\n"
-                "mutrace: %u most contended mutexes:\n"
-                "\n"
-                " Mutex #   Locked  Changed    Cont. tot.Time[ms] avg.Time[ms] max.Time[ms]       Type\n",
-                show_n_max);
-
-        for (i = 0, m = 0; i < n && m < show_n_max; i++)
-                m += mutex_info_stat(table[i]) ? 1 : 0;
-
-
-        if (i < n)
+        if (m > 0) {
                 fprintf(stderr,
-                        "     ...      ...      ...      ...          ...          ...          ...\n");
+                        "\n"
+                        "mutrace: %u most contended mutexes:\n"
+                        "\n"
+                        " Mutex #   Locked  Changed    Cont. tot.Time[ms] avg.Time[ms] max.Time[ms]       Type\n",
+                        m);
+
+                for (i = 0, m = 0; i < n && m < show_n_max; i++)
+                        m += mutex_info_stat(table[i]) ? 1 : 0;
+
+
+                if (i < n)
+                        fprintf(stderr,
+                                "     ...      ...      ...      ...          ...          ...          ...\n");
+        } else
+                fprintf(stderr,
+                        "\n"
+                        "mutrace: No mutex contended according to filtering parameters.\n");
 
         free(table);
 
