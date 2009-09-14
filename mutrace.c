@@ -19,7 +19,6 @@
 /* FIXMES:
  *
  *   - we probably should cover rwlocks, too
- *   - and conds, too!
  *
  */
 
@@ -94,8 +93,12 @@ static void shutdown(void) __attribute ((destructor));
 /* dlsym() violates ISO C, so confide the breakage into this function
  * to avoid warnings. */
 
-static inline fnptr_t dlsym_fn(void *handle, const char *symbol) {
-    return (fnptr_t) (long) dlsym(handle, symbol);
+static inline fnptr_t dlsym_fn(void *handle, const char *symbol, const char *version) {
+
+        if (version)
+                return (fnptr_t) (long) dlvsym(handle, symbol, version);
+        else
+                return (fnptr_t) (long) dlsym(handle, symbol);
 }
 
 static pid_t _gettid(void) {
@@ -140,16 +143,16 @@ static void setup(void) {
         int r;
         unsigned t;
 
-        real_pthread_mutex_init = dlsym_fn(RTLD_NEXT, "pthread_mutex_init");
-        real_pthread_mutex_destroy = dlsym_fn(RTLD_NEXT, "pthread_mutex_destroy");
-        real_pthread_mutex_lock = dlsym_fn(RTLD_NEXT, "pthread_mutex_lock");
-        real_pthread_mutex_trylock = dlsym_fn(RTLD_NEXT, "pthread_mutex_trylock");
-        real_pthread_mutex_timedlock = dlsym_fn(RTLD_NEXT, "pthread_mutex_timedlock");
-        real_pthread_mutex_unlock = dlsym_fn(RTLD_NEXT, "pthread_mutex_unlock");
-        real_pthread_cond_wait = dlsym_fn(RTLD_NEXT, "pthread_cond_wait");
-        real_pthread_cond_timedwait = dlsym_fn(RTLD_NEXT, "pthread_cond_timedwait");
-        real_exit = dlsym_fn(RTLD_NEXT, "exit");
-        real__Exit = dlsym_fn(RTLD_NEXT, "_Exit");
+        real_pthread_mutex_init = dlsym_fn(RTLD_NEXT, "pthread_mutex_init", NULL);
+        real_pthread_mutex_destroy = dlsym_fn(RTLD_NEXT, "pthread_mutex_destroy", NULL);
+        real_pthread_mutex_lock = dlsym_fn(RTLD_NEXT, "pthread_mutex_lock", NULL);
+        real_pthread_mutex_trylock = dlsym_fn(RTLD_NEXT, "pthread_mutex_trylock", NULL);
+        real_pthread_mutex_timedlock = dlsym_fn(RTLD_NEXT, "pthread_mutex_timedlock", NULL);
+        real_pthread_mutex_unlock = dlsym_fn(RTLD_NEXT, "pthread_mutex_unlock", NULL);
+        real_pthread_cond_wait = dlsym_fn(RTLD_NEXT, "pthread_cond_wait", "GLIBC_2.3.2");
+        real_pthread_cond_timedwait = dlsym_fn(RTLD_NEXT, "pthread_cond_timedwait", "GLIBC_2.3.2");
+        real_exit = dlsym_fn(RTLD_NEXT, "exit", NULL);
+        real__Exit = dlsym_fn(RTLD_NEXT, "_Exit", NULL);
 
         assert(real_pthread_mutex_init);
         assert(real_pthread_mutex_destroy);
@@ -772,25 +775,25 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex) {
         return real_pthread_mutex_unlock(mutex);
 }
 
-/* int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex) { */
-/*         int r; */
+int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex) {
+        int r;
 
-/*         mutex_unlock(mutex); */
-/*         r = real_pthread_cond_wait(cond, mutex); */
+        mutex_unlock(mutex);
+        r = real_pthread_cond_wait(cond, mutex);
 
-/*         /\* Unfortunately we cannot distuingish mutex contention and */
-/*          * the condition not being signalled here. *\/ */
-/*         mutex_lock(mutex, false); */
+        /* Unfortunately we cannot distuingish mutex contention and
+         * the condition not being signalled here. */
+        mutex_lock(mutex, false);
 
-/*         return r; */
-/* } */
+        return r;
+}
 
-/* int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *abstime) { */
-/*         int r; */
+int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *abstime) {
+        int r;
 
-/*         mutex_unlock(mutex); */
-/*         r = real_pthread_cond_timedwait(cond, mutex, abstime); */
-/*         mutex_lock(mutex, false); */
+        mutex_unlock(mutex);
+        r = real_pthread_cond_timedwait(cond, mutex, abstime);
+        mutex_lock(mutex, false);
 
-/*         return r; */
-/* } */
+        return r;
+}
