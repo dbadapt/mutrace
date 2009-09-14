@@ -500,6 +500,9 @@ static bool verify_frame(const char *s) {
         if (strstr(s, "/" SONAME "("))
                 return false;
 
+        if (strstr(s, "/" SONAME " ["))
+                return false;
+
         return true;
 }
 
