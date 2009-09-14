@@ -56,8 +56,8 @@ struct mutex_info {
         struct mutex_info *next;
 };
 
-static unsigned long hash_size = 3371; /* probably a good idea to pick a prime here */
-static unsigned long frames_max = 16;
+static unsigned hash_size = 3371; /* probably a good idea to pick a prime here */
+static unsigned frames_max = 16;
 
 static volatile unsigned n_broken = 0;
 static volatile unsigned n_collisions = 0;
@@ -114,10 +114,31 @@ static uint64_t nsec_now(void) {
                 (uint64_t) ts.tv_nsec;
 }
 
-static void setup(void) {
+static int parse_env(const char *n, unsigned *t) {
         const char *e;
+        char *x = NULL;
+        unsigned long ul;
+
+        if (!(e = getenv(n)))
+                return 0;
+
+        errno = 0;
+        ul = strtoul(e, &x, 0);
+        if (!x || *x || errno != 0)
+                return -1;
+
+        *t = (unsigned) ul;
+
+        if ((unsigned long) *t != ul)
+                return -1;
+
+        return 0;
+}
+
+static void setup(void) {
         pthread_mutex_t *m, *last;
         int r;
+        unsigned t;
 
         real_pthread_mutex_init = dlsym_fn(RTLD_NEXT, "pthread_mutex_init");
         real_pthread_mutex_destroy = dlsym_fn(RTLD_NEXT, "pthread_mutex_destroy");
@@ -141,29 +162,44 @@ static void setup(void) {
         assert(real_exit);
         assert(real__Exit);
 
-        if ((e = getenv("MUTRACE_HASH_SIZE"))) {
-                char *x = NULL;
+        t = hash_size;
+        if (parse_env("MUTRACE_HASH_SIZE", &t) < 0 || t <= 0)
+                fprintf(stderr, "mutrace: WARNING: Failed to parse MUTRACE_HASH_SIZE.\n");
+        else
+                hash_size = t;
 
-                errno = 0;
-                hash_size = strtoul(e, &x, 0);
+        t = frames_max;
+        if (parse_env("MUTRACE_FRAMES", &t) < 0 || t <= 0)
+                fprintf(stderr, "mutrace: WARNING: Failed to parse MUTRACE_FRAMES.\n");
+        else
+                frames_max = t;
 
-                if (!x || *x || errno != 0 || hash_size <= 0)
-                        fprintf(stderr,
-                                "\n"
-                                "mutrace: WARNING: Failed to parse MUTRACE_HASH_SIZE (%s).\n", e);
-        }
+        t = show_n_locked_min;
+        if (parse_env("MUTRACE_LOCKED_MIN", &t) < 0)
+                fprintf(stderr, "mutrace: WARNING: Failed to parse MUTRACE_LOCKED_MIN.\n");
+        else
+                show_n_locked_min = t;
 
-        if ((e = getenv("MUTRACE_FRAMES"))) {
-                char *x = NULL;
+        t = show_n_owner_changed_min;
+        if (parse_env("MUTRACE_OWNER_CHANGED_MIN", &t) < 0)
+                fprintf(stderr, "mutrace: WARNING: Failed to parse MUTRACE_OWNER_CHANGED_MIN.\n");
+        else
+                show_n_owner_changed_min = t;
 
-                errno = 0;
-                frames_max = strtoul(e, &x, 0);
+        t = show_n_contended_min;
+        if (parse_env("MUTRACE_CONTENDED_MIN", &t) < 0)
+                fprintf(stderr, "mutrace: WARNING: Failed to parse MUTRACE_CONTENDED_MIN.\n");
+        else
+                show_n_contended_min = t;
 
-                if (!x || *x || errno != 0 || frames_max <= 0)
-                        fprintf(stderr,
-                                "\n"
-                                "mutrace: WARNING: Failed to parse MUTRACE_FRAMES (%s).\n", e);
-        }
+        t = show_n_max;
+        if (parse_env("MUTRACE_MAX", &t) < 0 || t <= 0)
+                fprintf(stderr, "mutrace: WARNING: Failed to parse MUTRACE_MAX.\n");
+        else
+                show_n_max = t;
+
+        if (getenv("MUTRACE_TRAP"))
+                raise_trap = true;
 
         alive_mutexes = calloc(hash_size, sizeof(struct mutex_info*));
         assert(alive_mutexes);
@@ -405,13 +441,13 @@ static void show_summary(void) {
                 fprintf(stderr,
                         "\n"
                         "mutrace: WARNING: %u internal hash collisions detected. Results might not be as reliable as they could be.\n"
-                        "mutrace:          Try to increase MUTRACE_HASH_SIZE, which is currently at %lu.\n", n_collisions, hash_size);
+                        "mutrace:          Try to increase MUTRACE_HASH_SIZE, which is currently at %u.\n", n_collisions, hash_size);
 
         if (n_self_contended > 0)
                 fprintf(stderr,
                         "\n"
                         "mutrace: WARNING: %u internal mutex contention detected. Results might not be reliable as they could be.\n"
-                        "mutrace:          Try to increase MUTRACE_HASH_SIZE, which is currently at %lu.\n", n_self_contended, hash_size);
+                        "mutrace:          Try to increase MUTRACE_HASH_SIZE, which is currently at %u.\n", n_self_contended, hash_size);
 
 finish:
         shown_summary = true;
