@@ -41,7 +41,7 @@ struct mutex_info {
         uint64_t nsec_locked_total;
         uint64_t nsec_locked_max;
 
-        struct timespec timestamp;
+        uint64_t nsec_timestamp;
         char *stacktrace;
 
         unsigned id;
@@ -76,6 +76,8 @@ static pthread_mutex_t *mutexes_lock = NULL;
 
 static __thread bool recursive = false;
 
+static uint64_t nsec_timestamp_setup;
+
 static void setup(void) __attribute ((constructor));
 static void shutdown(void) __attribute ((destructor));
 
@@ -88,6 +90,18 @@ static inline fnptr_t dlsym_fn(void *handle, const char *symbol) {
 
 static pid_t _gettid(void) {
         return (pid_t) syscall(SYS_gettid);
+}
+
+static uint64_t nsec_now(void) {
+        struct timespec ts;
+        int r;
+
+        r = clock_gettime(CLOCK_MONOTONIC, &ts);
+        assert(r == 0);
+
+        return
+                (uint64_t) ts.tv_sec * 1000000000ULL +
+                (uint64_t) ts.tv_nsec;
 }
 
 static void setup(void) {
@@ -155,6 +169,8 @@ static void setup(void) {
 
                 assert(r == 0);
         }
+
+        nsec_timestamp_setup = nsec_now();
 
         fprintf(stderr, "mutrace: "PACKAGE_VERSION" sucessfully initialized.\n");
 }
@@ -271,30 +287,14 @@ static void show_summary(void) {
 
         struct mutex_info *mi, **table;
         unsigned n, u, i;
-
+        uint64_t t;
 
         real_pthread_mutex_lock(&summary_mutex);
 
         if (shown_summary)
                 goto finish;
 
-        if (n_broken > 0)
-                fprintf(stderr,
-                        "\n"
-                        "mutrace: WARNING: %u inconsistent mutex uses detected. Results might not be reliable.\n"
-                        "mutrace:          Fix your program first!\n", n_broken);
-
-        if (n_collisions > 0)
-                fprintf(stderr,
-                        "\n"
-                        "mutrace: WARNING: %u internal hash collisions detected. Results might not be as reliable as they could be.\n"
-                        "mutrace:          Try to increase MUTRACE_HASH_SIZE, which is currently at %lu.\n", n_collisions, hash_size);
-
-        if (n_self_contended > 0)
-                fprintf(stderr,
-                        "\n"
-                        "mutrace: WARNING: %u internal mutex contention detected. Results might not be reliable as they could be.\n"
-                        "mutrace:          Try to increase MUTRACE_HASH_SIZE, which is currently at %lu.\n", n_self_contended, hash_size);
+        t = nsec_now() - nsec_timestamp_setup;
 
         n = 0;
         for (u = 0; u < hash_size; u++) {
@@ -349,6 +349,28 @@ static void show_summary(void) {
 
         for (u = 0; u < hash_size; u++)
                 unlock_hash_mutex(u);
+
+        fprintf(stderr,
+                "\n"
+                "mutrace: Total runtime %0.3f ms.\n", (double) t / 1000000.0);
+
+        if (n_broken > 0)
+                fprintf(stderr,
+                        "\n"
+                        "mutrace: WARNING: %u inconsistent mutex uses detected. Results might not be reliable.\n"
+                        "mutrace:          Fix your program first!\n", n_broken);
+
+        if (n_collisions > 0)
+                fprintf(stderr,
+                        "\n"
+                        "mutrace: WARNING: %u internal hash collisions detected. Results might not be as reliable as they could be.\n"
+                        "mutrace:          Try to increase MUTRACE_HASH_SIZE, which is currently at %lu.\n", n_collisions, hash_size);
+
+        if (n_self_contended > 0)
+                fprintf(stderr,
+                        "\n"
+                        "mutrace: WARNING: %u internal mutex contention detected. Results might not be reliable as they could be.\n"
+                        "mutrace:          Try to increase MUTRACE_HASH_SIZE, which is currently at %lu.\n", n_self_contended, hash_size);
 
 finish:
         shown_summary = true;
@@ -530,7 +552,6 @@ int pthread_mutex_destroy(pthread_mutex_t *mutex) {
 }
 
 static void mutex_lock(pthread_mutex_t *mutex, bool busy) {
-        int r;
         struct mutex_info *mi;
         pid_t tid;
 
@@ -559,8 +580,7 @@ static void mutex_lock(pthread_mutex_t *mutex, bool busy) {
                 mi->last_owner = tid;
         }
 
-        r = clock_gettime(CLOCK_MONOTONIC, &mi->timestamp);
-        assert(r == 0);
+        mi->nsec_timestamp = nsec_now();
 
         mutex_info_release(mutex);
         recursive = false;
@@ -619,9 +639,7 @@ int pthread_mutex_trylock(pthread_mutex_t *mutex) {
 
 static void mutex_unlock(pthread_mutex_t *mutex) {
         struct mutex_info *mi;
-        struct timespec now;
         uint64_t t;
-        int r;
 
         if (recursive)
                 return;
@@ -636,13 +654,7 @@ static void mutex_unlock(pthread_mutex_t *mutex) {
 
         mi->n_lock_level--;
 
-        r = clock_gettime(CLOCK_MONOTONIC, &now);
-        assert(r == 0);
-
-        t =
-                (uint64_t) now.tv_sec * 1000000000ULL + (uint64_t) now.tv_nsec -
-                (uint64_t) mi->timestamp.tv_sec * 1000000000ULL - (uint64_t) mi->timestamp.tv_nsec;
-
+        t = nsec_now() - mi->nsec_timestamp;
         mi->nsec_locked_total += t;
 
         if (t > mi->nsec_locked_max)
