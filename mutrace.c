@@ -34,6 +34,7 @@
 #include <sys/types.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#include <sys/prctl.h>
 
 /* FIXMES:
  *
@@ -124,6 +125,18 @@ static uint64_t nsec_now(void) {
         return
                 (uint64_t) ts.tv_sec * 1000000000ULL +
                 (uint64_t) ts.tv_nsec;
+}
+
+static const char *get_prname(void) {
+        static char prname[17];
+        int r;
+
+        r = prctl(PR_GET_NAME, prname);
+        assert(r == 0);
+
+        prname[16] = 0;
+
+        return prname;
 }
 
 static int parse_env(const char *n, unsigned *t) {
@@ -255,7 +268,8 @@ static void setup(void) {
 
         initialized = true;
 
-        fprintf(stderr, "mutrace: "PACKAGE_VERSION" sucessfully initialized.\n");
+        fprintf(stderr, "mutrace: "PACKAGE_VERSION" sucessfully initialized for process %s (pid %lu).\n",
+                get_prname(), (unsigned long) getpid());
 }
 
 static unsigned long mutex_hash(pthread_mutex_t *mutex) {
@@ -401,6 +415,10 @@ static void show_summary(void) {
 
         t = nsec_now() - nsec_timestamp_setup;
 
+        fprintf(stderr,
+                "\n"
+                "mutrace: Showing statistics for process %s (pid %lu).\n", get_prname(), (unsigned long) getpid());
+
         n = 0;
         for (u = 0; u < hash_size; u++) {
                 lock_hash_mutex(u);
@@ -414,13 +432,11 @@ static void show_summary(void) {
 
         if (n <= 0) {
                 fprintf(stderr,
-                        "\n"
                         "mutrace: No mutexes used.\n");
                 goto finish;
         }
 
         fprintf(stderr,
-                "\n"
                 "mutrace: %u mutexes used.\n", n);
 
         table = malloc(sizeof(struct mutex_info*) * n);
@@ -447,7 +463,7 @@ static void show_summary(void) {
         if (m > 0) {
                 fprintf(stderr,
                         "\n"
-                        "mutrace: %u most contended mutexes:\n"
+                        "mutrace: Showing %u most contended mutexes:\n"
                         "\n"
                         " Mutex #   Locked  Changed    Cont. tot.Time[ms] avg.Time[ms] max.Time[ms]       Type\n",
                         m);
@@ -471,7 +487,7 @@ static void show_summary(void) {
 
         fprintf(stderr,
                 "\n"
-                "mutrace: Total runtime %0.3f ms.\n", (double) t / 1000000.0);
+                "mutrace: Total runtime is %0.3f ms.\n", (double) t / 1000000.0);
 
         if (n_broken > 0)
                 fprintf(stderr,
