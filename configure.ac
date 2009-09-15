@@ -18,14 +18,14 @@
 # You should have received a copy of the GNU Lesser General Public
 # License along with mutrace. If not, see <http://www.gnu.org/licenses/>.
 
-AC_PREREQ(2.63)
+AC_PREREQ(2.61)
 
 AC_INIT([mutrace], 0.1, [mzzhgenpr (at) 0pointer (dot) net])
 AC_CONFIG_SRCDIR([mutrace.c])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_MACRO_DIR(m4)
 
-AM_INIT_AUTOMAKE([foreign 1.11 -Wall -Wno-portability silent-rules tar-pax])
+AM_INIT_AUTOMAKE([foreign 1.10 -Wall -Wno-portability tar-pax])
 
 AC_SUBST(PACKAGE_URL, [http://git.0pointer.de/?p=mutrace.git])
 
