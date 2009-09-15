@@ -18,13 +18,20 @@
 EXTRA_DIST = \
 	bootstrap.sh \
 	LGPL \
-	README
+	README \
+	mutrace.in
 
 #include_HEADERS = \
 #	mutrace.h
 
 lib_LTLIBRARIES = \
 	libmutrace.la
+
+bin_SCRIPTS = \
+	mutrace
+
+CLEANFILES = \
+	mutrace
 
 libmutrace_la_SOURCES = \
 	mutrace.c
@@ -39,6 +46,11 @@ libmutrace_la_LIBADD = \
 libmutrace_la_CFLAGS = \
 	$(PTHREAD_CFLAGS) \
 	-DSONAME=\"libmutrace.so\"
+
+mutrace: mutrace.in Makefile
+	sed -e 's,@PACKAGE_STRING\@,$(PACKAGE_STRING),g' \
+                -e 's,@PACKAGE_NAME\@,$(PACKAGE_NAME),g' < $< > $@
+	chmod +x mutrace
 
 install-exec-hook:
 	rm -f $(DESTDIR)$(libdir)/libmutrace.la

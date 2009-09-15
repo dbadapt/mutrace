@@ -169,8 +169,9 @@ static void setup(void) {
         LOAD_FUNC(pthread_mutex_timedlock);
         LOAD_FUNC(pthread_mutex_unlock);
 
-        /* There's some kind of weird incompatibility problem if we
-         * don't ask for this explicit version of these functions */
+        /* There's some kind of weird incompatibility problem causing
+         * pthread_cond_timedwait() to freeze if we don't ask for this
+         * explicit version of these functions */
         LOAD_FUNC_VERSIONED(pthread_cond_wait, "GLIBC_2.3.2");
         LOAD_FUNC_VERSIONED(pthread_cond_timedwait, "GLIBC_2.3.2");
 
@@ -180,37 +181,37 @@ static void setup(void) {
 
         t = hash_size;
         if (parse_env("MUTRACE_HASH_SIZE", &t) < 0 || t <= 0)
-                fprintf(stderr, "mutrace: WARNING: Failed to parse MUTRACE_HASH_SIZE.\n");
+                fprintf(stderr, "mutrace: WARNING: Failed to parse $MUTRACE_HASH_SIZE.\n");
         else
                 hash_size = t;
 
         t = frames_max;
         if (parse_env("MUTRACE_FRAMES", &t) < 0 || t <= 0)
-                fprintf(stderr, "mutrace: WARNING: Failed to parse MUTRACE_FRAMES.\n");
+                fprintf(stderr, "mutrace: WARNING: Failed to parse $MUTRACE_FRAMES.\n");
         else
                 frames_max = t;
 
         t = show_n_locked_min;
         if (parse_env("MUTRACE_LOCKED_MIN", &t) < 0)
-                fprintf(stderr, "mutrace: WARNING: Failed to parse MUTRACE_LOCKED_MIN.\n");
+                fprintf(stderr, "mutrace: WARNING: Failed to parse $MUTRACE_LOCKED_MIN.\n");
         else
                 show_n_locked_min = t;
 
         t = show_n_owner_changed_min;
         if (parse_env("MUTRACE_OWNER_CHANGED_MIN", &t) < 0)
-                fprintf(stderr, "mutrace: WARNING: Failed to parse MUTRACE_OWNER_CHANGED_MIN.\n");
+                fprintf(stderr, "mutrace: WARNING: Failed to parse $MUTRACE_OWNER_CHANGED_MIN.\n");
         else
                 show_n_owner_changed_min = t;
 
         t = show_n_contended_min;
         if (parse_env("MUTRACE_CONTENDED_MIN", &t) < 0)
-                fprintf(stderr, "mutrace: WARNING: Failed to parse MUTRACE_CONTENDED_MIN.\n");
+                fprintf(stderr, "mutrace: WARNING: Failed to parse $MUTRACE_CONTENDED_MIN.\n");
         else
                 show_n_contended_min = t;
 
         t = show_n_max;
-        if (parse_env("MUTRACE_MAX", &t) < 0 || t <= 0)
-                fprintf(stderr, "mutrace: WARNING: Failed to parse MUTRACE_MAX.\n");
+        if (parse_env("MUTRACE_MAX", &t) < 0)
+                fprintf(stderr, "mutrace: WARNING: Failed to parse $MUTRACE_MAX.\n");
         else
                 show_n_max = t;
 
@@ -420,7 +421,7 @@ static void show_summary(void) {
 
         qsort(table, n, sizeof(table[0]), mutex_info_compare);
 
-        for (i = 0, m = 0; i < n && m < show_n_max; i++)
+        for (i = 0, m = 0; i < n && (show_n_max <= 0 || m < show_n_max); i++)
                 m += mutex_info_dump(table[i]) ? 1 : 0;
 
         if (m > 0) {
@@ -431,7 +432,7 @@ static void show_summary(void) {
                         " Mutex #   Locked  Changed    Cont. tot.Time[ms] avg.Time[ms] max.Time[ms]       Type\n",
                         m);
 
-                for (i = 0, m = 0; i < n && m < show_n_max; i++)
+                for (i = 0, m = 0; i < n && (show_n_max <= 0 || m < show_n_max); i++)
                         m += mutex_info_stat(table[i]) ? 1 : 0;
 
 
@@ -462,13 +463,13 @@ static void show_summary(void) {
                 fprintf(stderr,
                         "\n"
                         "mutrace: WARNING: %u internal hash collisions detected. Results might not be as reliable as they could be.\n"
-                        "mutrace:          Try to increase MUTRACE_HASH_SIZE, which is currently at %u.\n", n_collisions, hash_size);
+                        "mutrace:          Try to increase $MUTRACE_HASH_SIZE (--hash-size=), which is currently at %u.\n", n_collisions, hash_size);
 
         if (n_self_contended > 0)
                 fprintf(stderr,
                         "\n"
                         "mutrace: WARNING: %u internal mutex contention detected. Results might not be reliable as they could be.\n"
-                        "mutrace:          Try to increase MUTRACE_HASH_SIZE, which is currently at %u.\n", n_self_contended, hash_size);
+                        "mutrace:          Try to increase $MUTRACE_HASH_SIZE (--hash-size=), which is currently at %u.\n", n_self_contended, hash_size);
 
 finish:
         shown_summary = true;
