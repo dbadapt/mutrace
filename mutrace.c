@@ -103,6 +103,9 @@ static int (*real_pthread_create)(pthread_t *newthread, const pthread_attr_t *at
 static void (*real_exit)(int status) __attribute__((noreturn)) = NULL;
 static void (*real__exit)(int status) __attribute__((noreturn)) = NULL;
 static void (*real__Exit)(int status) __attribute__((noreturn)) = NULL;
+static int (*real_backtrace)(void **array, int size) = NULL;
+static char **(*real_backtrace_symbols)(void *const *array, int size) = NULL;
+static void (*real_backtrace_symbols_fd)(void *const *array, int size, int fd) = NULL;
 
 static struct mutex_info **alive_mutexes = NULL, **dead_mutexes = NULL;
 static pthread_mutex_t *mutexes_lock = NULL;
@@ -210,6 +213,10 @@ static void load_functions(void) {
         LOAD_FUNC(exit);
         LOAD_FUNC(_exit);
         LOAD_FUNC(_Exit);
+
+        LOAD_FUNC(backtrace);
+        LOAD_FUNC(backtrace_symbols);
+        LOAD_FUNC(backtrace_symbols_fd);
 
         loaded = true;
         recursive = false;
@@ -587,10 +594,10 @@ static char* generate_stacktrace(void) {
         buffer = malloc(sizeof(void*) * frames_max);
         assert(buffer);
 
-        n = backtrace(buffer, frames_max);
+        n = real_backtrace(buffer, frames_max);
         assert(n >= 0);
 
-        strings = backtrace_symbols(buffer, n);
+        strings = real_backtrace_symbols(buffer, n);
         assert(strings);
 
         free(buffer);
@@ -966,4 +973,40 @@ int pthread_create(pthread_t *newthread,
         }
 
         return real_pthread_create(newthread, attr, start_routine, arg);
+}
+
+int backtrace(void **array, int size) {
+        int r;
+
+        load_functions();
+
+        /* backtrace() internally uses a mutex. To avoid an endless
+         * loop we need to disable ourselves so that we don't try to
+         * call backtrace() ourselves when looking at that lock. */
+
+        recursive = true;
+        r = real_backtrace(array, size);
+        recursive = false;
+
+        return r;
+}
+
+char **backtrace_symbols(void *const *array, int size) {
+        char **r;
+
+        load_functions();
+
+        recursive = true;
+        r = real_backtrace_symbols(array, size);
+        recursive = false;
+
+        return r;
+}
+
+void backtrace_symbols_fd(void *const *array, int size, int fd) {
+        load_functions();
+
+        recursive = true;
+        real_backtrace_symbols_fd(array, size, fd);
+        recursive = false;
 }
