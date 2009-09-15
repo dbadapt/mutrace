@@ -49,6 +49,9 @@
 #define DEBUG_TRAP raise(SIGTRAP)
 #endif
 
+#define LIKELY(x) (__builtin_expect(!!(x),1))
+#define UNLIKELY(x) (__builtin_expect(!!(x),0))
+
 struct mutex_info {
         pthread_mutex_t *mutex;
 
@@ -178,7 +181,7 @@ static int parse_env(const char *n, unsigned *t) {
 static void load_functions(void) {
         static volatile bool loaded = false;
 
-        if (loaded)
+        if (LIKELY(loaded))
                 return;
 
         recursive = true;
@@ -219,7 +222,7 @@ static void setup(void) {
 
         load_functions();
 
-        if (initialized)
+        if (LIKELY(initialized))
                 return;
 
         if (__malloc_hook) {
@@ -316,7 +319,7 @@ static void lock_hash_mutex(unsigned u) {
 
         r = real_pthread_mutex_trylock(mutexes_lock + u);
 
-        if (r == EBUSY) {
+        if (UNLIKELY(r == EBUSY)) {
                 __sync_fetch_and_add(&n_self_contended, 1);
                 r = real_pthread_mutex_lock(mutexes_lock + u);
         }
@@ -696,7 +699,7 @@ int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *mutexa
         int r;
         unsigned long u;
 
-        if (!initialized && recursive) {
+        if (UNLIKELY(!initialized && recursive)) {
                 static const pthread_mutex_t template = PTHREAD_MUTEX_INITIALIZER;
                 /* Now this is incredibly ugly. */
 
@@ -710,7 +713,7 @@ int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *mutexa
         if (r != 0)
                 return r;
 
-        if (initialized && !recursive) {
+        if (LIKELY(initialized && !recursive)) {
                 int type = PTHREAD_MUTEX_NORMAL;
 
                 recursive = true;
@@ -742,7 +745,7 @@ int pthread_mutex_destroy(pthread_mutex_t *mutex) {
 
         load_functions();
 
-        if (initialized && !recursive) {
+        if (LIKELY(initialized && !recursive)) {
                 recursive = true;
 
                 u = mutex_hash(mutex);
@@ -762,7 +765,7 @@ static void mutex_lock(pthread_mutex_t *mutex, bool busy) {
         struct mutex_info *mi;
         pid_t tid;
 
-        if (!initialized || recursive)
+        if (UNLIKELY(!initialized || recursive))
                 return;
 
         recursive = true;
@@ -800,7 +803,7 @@ int pthread_mutex_lock(pthread_mutex_t *mutex) {
         int r;
         bool busy;
 
-        if (!initialized && recursive) {
+        if (UNLIKELY(!initialized && recursive)) {
                 /* During the initialization phase we might be called
                  * inside of dlsym(). Since we'd enter an endless loop
                  * if we tried to resolved the real
@@ -815,13 +818,13 @@ int pthread_mutex_lock(pthread_mutex_t *mutex) {
         load_functions();
 
         r = real_pthread_mutex_trylock(mutex);
-        if (r != EBUSY && r != 0)
+        if (UNLIKELY(r != EBUSY && r != 0))
                 return r;
 
-        if ((busy = (r == EBUSY))) {
+        if (UNLIKELY((busy = (r == EBUSY)))) {
                 r = real_pthread_mutex_lock(mutex);
 
-                if (r != 0)
+                if (UNLIKELY(r != 0))
                         return r;
         }
 
@@ -833,7 +836,7 @@ int pthread_mutex_timedlock(pthread_mutex_t *mutex, const struct timespec *absti
         int r;
         bool busy;
 
-        if (!initialized && recursive) {
+        if (UNLIKELY(!initialized && recursive)) {
                 assert(!threads_existing);
                 return 0;
         }
@@ -841,15 +844,15 @@ int pthread_mutex_timedlock(pthread_mutex_t *mutex, const struct timespec *absti
         load_functions();
 
         r = real_pthread_mutex_trylock(mutex);
-        if (r != EBUSY && r != 0)
+        if (UNLIKELY(r != EBUSY && r != 0))
                 return r;
 
-        if ((busy = (r == EBUSY))) {
+        if (UNLIKELY((busy = (r == EBUSY)))) {
                 r = real_pthread_mutex_timedlock(mutex, abstime);
 
-                if (r == ETIMEDOUT)
+                if (UNLIKELY(r == ETIMEDOUT))
                         busy = true;
-                else if (r != 0)
+                else if (UNLIKELY(r != 0))
                         return r;
         }
 
@@ -860,7 +863,7 @@ int pthread_mutex_timedlock(pthread_mutex_t *mutex, const struct timespec *absti
 int pthread_mutex_trylock(pthread_mutex_t *mutex) {
         int r;
 
-        if (!initialized && recursive) {
+        if (UNLIKELY(!initialized && recursive)) {
                 assert(!threads_existing);
                 return 0;
         }
@@ -868,10 +871,10 @@ int pthread_mutex_trylock(pthread_mutex_t *mutex) {
         load_functions();
 
         r = real_pthread_mutex_trylock(mutex);
+        if (UNLIKELY(r != 0))
+                return r;
 
-        if (r == 0)
-                mutex_lock(mutex, false);
-
+        mutex_lock(mutex, false);
         return r;
 }
 
@@ -879,7 +882,7 @@ static void mutex_unlock(pthread_mutex_t *mutex) {
         struct mutex_info *mi;
         uint64_t t;
 
-        if (!initialized || recursive)
+        if (UNLIKELY(!initialized || recursive))
                 return;
 
         recursive = true;
@@ -907,7 +910,7 @@ static void mutex_unlock(pthread_mutex_t *mutex) {
 
 int pthread_mutex_unlock(pthread_mutex_t *mutex) {
 
-        if (!initialized && recursive) {
+        if (UNLIKELY(!initialized && recursive)) {
                 assert(!threads_existing);
                 return 0;
         }
@@ -957,7 +960,7 @@ int pthread_create(pthread_t *newthread,
 
         load_functions();
 
-        if (!threads_existing) {
+        if (UNLIKELY(!threads_existing)) {
                 threads_existing = true;
                 setup();
         }
