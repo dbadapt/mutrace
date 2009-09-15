@@ -31,7 +31,9 @@ libmutrace_la_SOURCES = \
 libmutrace_la_LDFLAGS = \
 	-avoid-version \
 	-module \
-	-export-dynamic
+	-export-dynamic \
+	-shared \
+	-prefer-pic
 libmutrace_la_LIBADD = \
 	$(PTHREAD_LIBS)
 libmutrace_la_CFLAGS = \
