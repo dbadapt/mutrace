@@ -228,6 +228,16 @@ static void setup(void) {
                         "mutrace: alternative memory allocator (jemalloc?) which is not compatible with\n"
                         "mutrace: mutrace. Please rebuild your program with the standard memory\n"
                         "mutrace: allocator or fix mutrace to handle yours correctly.\n");
+
+                /* The reason for this is that jemalloc and other
+                 * allocators tend to call pthread_mutex_xxx() from
+                 * the allocator. However, we need to call malloc()
+                 * ourselves from some mutex operations so this might
+                 * create an endless loop eventually overflowing the
+                 * stack. glibc's malloc() does locking too but uses
+                 * lock routines that do not end up calling
+                 * pthread_mutex_xxx(). */
+
                 real_exit(1);
         }
 
