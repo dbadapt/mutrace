@@ -35,6 +35,7 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <sys/prctl.h>
+#include <malloc.h>
 
 /* FIXMES:
  *
@@ -220,6 +221,15 @@ static void setup(void) {
 
         if (initialized)
                 return;
+
+        if (__malloc_hook) {
+                fprintf(stderr,
+                        "mutrace: Detected non-glibc memory allocator. Your program uses some\n"
+                        "mutrace: alternative memory allocator (jemalloc?) which is not compatible with\n"
+                        "mutrace: mutrace. Please rebuild your program with the standard memory\n"
+                        "mutrace: allocator or fix mutrace to handle yours correctly.\n");
+                real_exit(1);
+        }
 
         t = hash_size;
         if (parse_env("MUTRACE_HASH_SIZE", &t) < 0 || t <= 0)
