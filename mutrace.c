@@ -173,7 +173,7 @@ static int parse_env(const char *n, unsigned *t) {
         } while (false)
 
 static void load_functions(void) {
-        static bool loaded = false;
+        static volatile bool loaded = false;
 
         if (loaded)
                 return;
@@ -201,6 +201,8 @@ static void load_functions(void) {
         LOAD_FUNC(exit);
         LOAD_FUNC(_exit);
         LOAD_FUNC(_Exit);
+
+        loaded = true;
 }
 
 static void setup(void) {
