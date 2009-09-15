@@ -20,10 +20,6 @@ EXTRA_DIST = \
 	LGPL \
 	README
 
-SUBDIRS =
-MAINTAINERCLEANFILES =
-noinst_DATA =
-
 #include_HEADERS = \
 #	mutrace.h
 
