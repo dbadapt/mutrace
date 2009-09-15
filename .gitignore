@@ -24,3 +24,4 @@ configure
 libtool
 ltmain.sh
 install-sh
+mutrace

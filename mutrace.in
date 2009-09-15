@@ -1,0 +1,126 @@
+#!/bin/bash
+
+# This file is part of mutrace.
+#
+# Copyright 2009 Lennart Poettering
+#
+# mutrace is free software: you can redistribute it and/or modify it
+# under the terms of the GNU Lesser General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+#
+# mutrace is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# Lesser General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public
+# License along with mutrace. If not, see <http://www.gnu.org/licenses/>.
+
+if ! TEMP=`getopt -o h --long hash-size:,frames:,locked-min:,owner-changed-min:,contended-min:,max:,trap,help,all -n mutrace -- "$@"` ; then
+    exit 1
+fi
+
+eval set -- "$TEMP"
+
+while : ; do
+        case $1 in
+                --hash-size)
+                        export MUTRACE_HASH_SIZE="$2"
+                        shift 2
+                        ;;
+
+                --frames)
+                        export MUTRACE_FRAMES="$2"
+                        shift 2
+                        ;;
+
+                --locked-min)
+                        export MUTRACE_LOCKED_MIN="$2"
+                        shift 2
+                        ;;
+
+                --owner-changed-min)
+                        export MUTRACE_OWNER_CHANGED_MIN="$2"
+                        shift 2
+                        ;;
+
+                --contended-min)
+                        export MUTRACE_CONTENDED_MIN="$2"
+                        shift 2
+                        ;;
+
+                --max)
+                        export MUTRACE_MAX="$2"
+                        shift 2
+                        ;;
+
+                --trap)
+                        export MUTRACE_TRAP=1
+                        shift 1
+                        ;;
+
+                --all)
+                        export MUTRACE_LOCKED_MIN=0
+                        export MUTRACE_OWNER_CHANGED_MIN=0
+                        export MUTRACE_CONTENDED_MIN=0
+                        export MUTRACE_MAX=0
+                        shift 1
+                        ;;
+
+                -h|--help)
+                        cat <<EOF
+@PACKAGE_STRING@
+
+Usage: @PACKAGE_NAME@ [OPTIONS...] -- APPLICATION [ARGUMENTS...]
+
+COMMANDS:
+  -h, --help                      Show this help
+
+OPTIONS:
+      --hash-size=INTEGER         Set size of mutex hash table
+      --frames=INTEGER            Set number of frames to show in stack traces
+      --max=INTEGER               Show this many mutexes at maximum
+
+      --locked-min=INTEGER        Only show mutexes that have been locked at
+                                  least this often
+      --owner-changed-min=INTEGER Only show mutexes whose owning thread changed
+                                  at least this often
+      --contended-min=INTEGER     Only show mutexes which have been contended
+                                  at least this often
+      --all                       Show all mutexes, overrides the values of the
+                                  three values above
+
+      --trap                      Trigger a debugger trap each time a mutex
+                                  inconsistency is detected (for use in
+                                  conjunction with gdb)
+EOF
+
+                        shift 1
+                        ;;
+                --)
+                        shift
+                        break
+                        ;;
+
+                *)
+                        echo "Parsing failed!" >&2
+                        exit 1
+                        ;;
+        esac
+done
+
+shift $(($OPTIND-1))
+
+if [ x"$1" = x ] ; then
+        echo "Please specify an application to profile!" >&2
+        exit 1
+fi
+
+if [ x"$LD_PRELOAD" = x ] ; then
+        export LD_PRELOAD="libmutrace.so"
+else
+        export LD_PRELOAD="$LD_PRELOAD libmutrace.so"
+fi
+
+exec "$@"
