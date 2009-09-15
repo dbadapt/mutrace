@@ -31,7 +31,7 @@ AC_SUBST(PACKAGE_URL, [http://git.0pointer.de/?p=mutrace.git])
 
 AC_CANONICAL_HOST
 
-AM_SILENT_RULES([yes])
+m4_ifdef([AM_SILENT_RULES], [AM_SILENT_RULES([yes])])
 
 if type -p stow > /dev/null && test -d /usr/local/stow ; then
    AC_MSG_NOTICE([*** Found /usr/local/stow: default install prefix set to /usr/local/stow/${PACKAGE_NAME}-${PACKAGE_VERSION} ***])
