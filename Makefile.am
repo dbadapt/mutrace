@@ -42,7 +42,9 @@ libmutrace_la_LDFLAGS = \
 	-shared \
 	-prefer-pic
 libmutrace_la_LIBADD = \
-	$(PTHREAD_LIBS)
+	$(PTHREAD_LIBS) \
+	-lrt \
+	-ldl
 libmutrace_la_CFLAGS = \
 	$(PTHREAD_CFLAGS) \
 	-DSONAME=\"libmutrace.so\"
