@@ -1,0 +1,22 @@
+MUTRACE Mutex Tracer
+
+GIT:
+        git://git.0pointer.de/mutrace.git
+
+GITWEB:
+        http://git.0pointer.de/?p=mutrace.git
+
+NOTES:
+        For a terse overview wht mutrace can do for you, please read
+        the announcement blog story:
+
+        http://0pointer.de/blog/projects/mutrace.html
+
+LICENSE:
+        LGPLv3+
+
+AUTHORS:
+        Lennart Poettering
+
+REQUIREMENTS:
+        Recent gcc, glibc, Linux

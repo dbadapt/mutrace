@@ -19,7 +19,7 @@
   License along with mutrace. If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#define _GNU_SOURCE
+#include "config.h"
 
 #include <pthread.h>
 #include <execinfo.h>
