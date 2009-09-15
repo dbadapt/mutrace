@@ -95,6 +95,7 @@ static int (*real_pthread_mutex_timedlock)(pthread_mutex_t *mutex, const struct 
 static int (*real_pthread_mutex_unlock)(pthread_mutex_t *mutex) = NULL;
 static int (*real_pthread_cond_wait)(pthread_cond_t *cond, pthread_mutex_t *mutex) = NULL;
 static int (*real_pthread_cond_timedwait)(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *abstime) = NULL;
+static int (*real_pthread_create)(pthread_t *newthread, const pthread_attr_t *attr, void *(*start_routine) (void *), void *arg) = NULL;
 static void (*real_exit)(int status) __attribute__((noreturn)) = NULL;
 static void (*real__exit)(int status) __attribute__((noreturn)) = NULL;
 static void (*real__Exit)(int status) __attribute__((noreturn)) = NULL;
@@ -105,6 +106,7 @@ static pthread_mutex_t *mutexes_lock = NULL;
 static __thread bool recursive = false;
 
 static volatile bool initialized = false;
+static volatile bool threads_existing = false;
 
 static uint64_t nsec_timestamp_setup;
 
@@ -178,6 +180,8 @@ static void load_functions(void) {
         if (loaded)
                 return;
 
+        recursive = true;
+
         /* If someone uses a shared library constructor that is called
          * before ours we might not be initialized yet when the first
          * lock related operation is executed. To deal with this we'll
@@ -191,6 +195,7 @@ static void load_functions(void) {
         LOAD_FUNC(pthread_mutex_trylock);
         LOAD_FUNC(pthread_mutex_timedlock);
         LOAD_FUNC(pthread_mutex_unlock);
+        LOAD_FUNC(pthread_create);
 
         /* There's some kind of weird incompatibility problem causing
          * pthread_cond_timedwait() to freeze if we don't ask for this
@@ -203,6 +208,7 @@ static void load_functions(void) {
         LOAD_FUNC(_Exit);
 
         loaded = true;
+        recursive = false;
 }
 
 static void setup(void) {
@@ -211,6 +217,9 @@ static void setup(void) {
         unsigned t;
 
         load_functions();
+
+        if (initialized)
+                return;
 
         t = hash_size;
         if (parse_env("MUTRACE_HASH_SIZE", &t) < 0 || t <= 0)
@@ -667,6 +676,14 @@ int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *mutexa
         int r;
         unsigned long u;
 
+        if (!initialized && recursive) {
+                static const pthread_mutex_t template = PTHREAD_MUTEX_INITIALIZER;
+                /* Now this is incredibly ugly. */
+
+                memcpy(mutex, &template, sizeof(pthread_mutex_t));
+                return 0;
+        }
+
         load_functions();
 
         r = real_pthread_mutex_init(mutex, mutexattr);
@@ -700,6 +717,8 @@ int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *mutexa
 
 int pthread_mutex_destroy(pthread_mutex_t *mutex) {
         unsigned long u;
+
+        assert(initialized || !recursive);
 
         load_functions();
 
@@ -761,6 +780,18 @@ int pthread_mutex_lock(pthread_mutex_t *mutex) {
         int r;
         bool busy;
 
+        if (!initialized && recursive) {
+                /* During the initialization phase we might be called
+                 * inside of dlsym(). Since we'd enter an endless loop
+                 * if we tried to resolved the real
+                 * pthread_mutex_lock() here then we simply fake the
+                 * lock which should be safe since no thread can be
+                 * running yet. */
+
+                assert(!threads_existing);
+                return 0;
+        }
+
         load_functions();
 
         r = real_pthread_mutex_trylock(mutex);
@@ -781,6 +812,11 @@ int pthread_mutex_lock(pthread_mutex_t *mutex) {
 int pthread_mutex_timedlock(pthread_mutex_t *mutex, const struct timespec *abstime) {
         int r;
         bool busy;
+
+        if (!initialized && recursive) {
+                assert(!threads_existing);
+                return 0;
+        }
 
         load_functions();
 
@@ -803,6 +839,11 @@ int pthread_mutex_timedlock(pthread_mutex_t *mutex, const struct timespec *absti
 
 int pthread_mutex_trylock(pthread_mutex_t *mutex) {
         int r;
+
+        if (!initialized && recursive) {
+                assert(!threads_existing);
+                return 0;
+        }
 
         load_functions();
 
@@ -846,6 +887,11 @@ static void mutex_unlock(pthread_mutex_t *mutex) {
 
 int pthread_mutex_unlock(pthread_mutex_t *mutex) {
 
+        if (!initialized && recursive) {
+                assert(!threads_existing);
+                return 0;
+        }
+
         load_functions();
 
         mutex_unlock(mutex);
@@ -855,6 +901,8 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex) {
 
 int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex) {
         int r;
+
+        assert(initialized || !recursive);
 
         load_functions();
 
@@ -871,6 +919,8 @@ int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex) {
 int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *abstime) {
         int r;
 
+        assert(initialized || !recursive);
+
         load_functions();
 
         mutex_unlock(mutex);
@@ -878,4 +928,19 @@ int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex, const s
         mutex_lock(mutex, false);
 
         return r;
+}
+
+int pthread_create(pthread_t *newthread,
+                   const pthread_attr_t *attr,
+                   void *(*start_routine) (void *),
+                   void *arg) {
+
+        load_functions();
+
+        if (!threads_existing) {
+                threads_existing = true;
+                setup();
+        }
+
+        return real_pthread_create(newthread, attr, start_routine, arg);
 }
