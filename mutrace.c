@@ -103,6 +103,8 @@ static pthread_mutex_t *mutexes_lock = NULL;
 
 static __thread bool recursive = false;
 
+static volatile bool initialized = false;
+
 static uint64_t nsec_timestamp_setup;
 
 static void setup(void) __attribute ((constructor));
@@ -157,10 +159,18 @@ static int parse_env(const char *n, unsigned *t) {
                 assert(real_##name);                                    \
         } while (false)
 
-static void setup(void) {
-        pthread_mutex_t *m, *last;
-        int r;
-        unsigned t;
+static void load_functions(void) {
+        static bool loaded = false;
+
+        if (loaded)
+                return;
+
+        /* If someone uses a shared library constructor that is called
+         * before ours we might not be initialized yet when the first
+         * lock related operation is executed. To deal with this we'll
+         * simply call the original implementation and do nothing
+         * else, but for that we do need the original function
+         * pointers. */
 
         LOAD_FUNC(pthread_mutex_init);
         LOAD_FUNC(pthread_mutex_destroy);
@@ -178,6 +188,14 @@ static void setup(void) {
         LOAD_FUNC(exit);
         LOAD_FUNC(_exit);
         LOAD_FUNC(_Exit);
+}
+
+static void setup(void) {
+        pthread_mutex_t *m, *last;
+        int r;
+        unsigned t;
+
+        load_functions();
 
         t = hash_size;
         if (parse_env("MUTRACE_HASH_SIZE", &t) < 0 || t <= 0)
@@ -234,6 +252,8 @@ static void setup(void) {
         }
 
         nsec_timestamp_setup = nsec_now();
+
+        initialized = true;
 
         fprintf(stderr, "mutrace: "PACKAGE_VERSION" sucessfully initialized.\n");
 }
@@ -629,11 +649,13 @@ int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *mutexa
         int r;
         unsigned long u;
 
+        load_functions();
+
         r = real_pthread_mutex_init(mutex, mutexattr);
         if (r != 0)
                 return r;
 
-        if (!recursive) {
+        if (initialized && !recursive) {
                 int type = PTHREAD_MUTEX_NORMAL;
 
                 recursive = true;
@@ -661,12 +683,20 @@ int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *mutexa
 int pthread_mutex_destroy(pthread_mutex_t *mutex) {
         unsigned long u;
 
-        u = mutex_hash(mutex);
-        lock_hash_mutex(u);
+        load_functions();
 
-        mutex_info_remove(u, mutex);
+        if (initialized && !recursive) {
+                recursive = true;
 
-        unlock_hash_mutex(u);
+                u = mutex_hash(mutex);
+                lock_hash_mutex(u);
+
+                mutex_info_remove(u, mutex);
+
+                unlock_hash_mutex(u);
+
+                recursive = false;
+        }
 
         return real_pthread_mutex_destroy(mutex);
 }
@@ -675,7 +705,7 @@ static void mutex_lock(pthread_mutex_t *mutex, bool busy) {
         struct mutex_info *mi;
         pid_t tid;
 
-        if (recursive)
+        if (!initialized || recursive)
                 return;
 
         recursive = true;
@@ -713,6 +743,8 @@ int pthread_mutex_lock(pthread_mutex_t *mutex) {
         int r;
         bool busy;
 
+        load_functions();
+
         r = real_pthread_mutex_trylock(mutex);
         if (r != EBUSY && r != 0)
                 return r;
@@ -731,6 +763,8 @@ int pthread_mutex_lock(pthread_mutex_t *mutex) {
 int pthread_mutex_timedlock(pthread_mutex_t *mutex, const struct timespec *abstime) {
         int r;
         bool busy;
+
+        load_functions();
 
         r = real_pthread_mutex_trylock(mutex);
         if (r != EBUSY && r != 0)
@@ -752,6 +786,8 @@ int pthread_mutex_timedlock(pthread_mutex_t *mutex, const struct timespec *absti
 int pthread_mutex_trylock(pthread_mutex_t *mutex) {
         int r;
 
+        load_functions();
+
         r = real_pthread_mutex_trylock(mutex);
 
         if (r == 0)
@@ -764,7 +800,7 @@ static void mutex_unlock(pthread_mutex_t *mutex) {
         struct mutex_info *mi;
         uint64_t t;
 
-        if (recursive)
+        if (!initialized || recursive)
                 return;
 
         recursive = true;
@@ -792,6 +828,8 @@ static void mutex_unlock(pthread_mutex_t *mutex) {
 
 int pthread_mutex_unlock(pthread_mutex_t *mutex) {
 
+        load_functions();
+
         mutex_unlock(mutex);
 
         return real_pthread_mutex_unlock(mutex);
@@ -799,6 +837,8 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex) {
 
 int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex) {
         int r;
+
+        load_functions();
 
         mutex_unlock(mutex);
         r = real_pthread_cond_wait(cond, mutex);
@@ -812,6 +852,8 @@ int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex) {
 
 int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *abstime) {
         int r;
+
+        load_functions();
 
         mutex_unlock(mutex);
         r = real_pthread_cond_timedwait(cond, mutex, abstime);
