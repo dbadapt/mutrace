@@ -55,7 +55,7 @@
 struct mutex_info {
         pthread_mutex_t *mutex;
 
-        int type;
+        int type, protocol;
         bool broken;
 
         unsigned n_lock_level;
@@ -421,13 +421,30 @@ static const char* mutex_type_name(int type) {
         }
 }
 
+static const char* mutex_protocol_name(int protocol) {
+        switch (protocol) {
+
+                case PTHREAD_PRIO_NONE:
+                        return "none";
+
+                case PTHREAD_PRIO_INHERIT:
+                        return "inherit";
+
+                case PTHREAD_PRIO_PROTECT:
+                        return "protect";
+
+                default:
+                        return "unknown";
+        }
+}
+
 static bool mutex_info_stat(struct mutex_info *mi) {
 
         if (!mutex_info_show(mi))
                 return false;
 
         fprintf(stderr,
-                "%8u %8u %8u %8u %12.3f %12.3f %12.3f %10s%s\n",
+                "%8u %8u %8u %8u %12.3f %12.3f %12.3f %10s %7s%s\n",
                 mi->id,
                 mi->n_locked,
                 mi->n_owner_changed,
@@ -436,6 +453,7 @@ static bool mutex_info_stat(struct mutex_info *mi) {
                 (double) mi->nsec_locked_total / mi->n_locked / 1000000.0,
                 (double) mi->nsec_locked_max / 1000000.0,
                 mutex_type_name(mi->type),
+                mutex_protocol_name(mi->protocol),
                 mi->broken ? " (inconsistent!)" : "");
 
         return true;
@@ -506,7 +524,7 @@ static void show_summary(void) {
                         "\n"
                         "mutrace: Showing %u most contended mutexes:\n"
                         "\n"
-                        " Mutex #   Locked  Changed    Cont. tot.Time[ms] avg.Time[ms] max.Time[ms]       Type\n",
+                        " Mutex #   Locked  Changed    Cont. tot.Time[ms] avg.Time[ms] max.Time[ms]       Type   Prot.\n",
                         m);
 
                 for (i = 0, m = 0; i < n && (show_n_max <= 0 || m < show_n_max); i++)
@@ -515,7 +533,7 @@ static void show_summary(void) {
 
                 if (i < n)
                         fprintf(stderr,
-                                "     ...      ...      ...      ...          ...          ...          ...        ...\n");
+                                "     ...      ...      ...      ...          ...          ...          ...        ...     ...\n");
         } else
                 fprintf(stderr,
                         "\n"
@@ -637,7 +655,7 @@ static char* generate_stacktrace(void) {
         return ret;
 }
 
-static struct mutex_info *mutex_info_add(unsigned long u, pthread_mutex_t *mutex, int type) {
+static struct mutex_info *mutex_info_add(unsigned long u, pthread_mutex_t *mutex, int type, int protocol) {
         struct mutex_info *mi;
 
         /* Needs external locking */
@@ -650,6 +668,7 @@ static struct mutex_info *mutex_info_add(unsigned long u, pthread_mutex_t *mutex
 
         mi->mutex = mutex;
         mi->type = type;
+        mi->protocol = protocol;
         mi->stacktrace = generate_stacktrace();
 
         mi->next = alive_mutexes[u];
@@ -692,7 +711,7 @@ static struct mutex_info *mutex_info_acquire(pthread_mutex_t *mutex) {
 
         /* FIXME: We assume that static mutexes are NORMAL, which
          * might not actually be correct */
-        return mutex_info_add(u, mutex, PTHREAD_MUTEX_NORMAL);
+        return mutex_info_add(u, mutex, PTHREAD_MUTEX_NORMAL, PTHREAD_PRIO_NONE);
 }
 
 static void mutex_info_release(pthread_mutex_t *mutex) {
@@ -722,6 +741,7 @@ int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *mutexa
 
         if (LIKELY(initialized && !recursive)) {
                 int type = PTHREAD_MUTEX_NORMAL;
+                int protocol = PTHREAD_PRIO_NONE;
 
                 recursive = true;
                 u = mutex_hash(mutex);
@@ -734,9 +754,12 @@ int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *mutexa
 
                         k = pthread_mutexattr_gettype(mutexattr, &type);
                         assert(k == 0);
+
+                        k = pthread_mutexattr_getprotocol(mutexattr, &protocol);
+                        assert(k == 0);
                 }
 
-                mutex_info_add(u, mutex, type);
+                mutex_info_add(u, mutex, type, protocol);
 
                 unlock_hash_mutex(u);
                 recursive = false;
