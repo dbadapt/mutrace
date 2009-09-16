@@ -475,7 +475,7 @@ static bool mutex_info_stat(struct mutex_info *mi) {
                 (double) mi->nsec_locked_total / mi->n_locked / 1000000.0,
                 (double) mi->nsec_locked_max / 1000000.0,
                 mi->broken ? '!' : (mi->dead ? 'x' : '-'),
-                mi->realtime ? 'R' : '-',
+                track_rt ? (mi->realtime ? 'R' : '-') : '.',
                 mutex_type_name(mi->type),
                 mutex_protocol_name(mi->protocol));
 
@@ -568,6 +568,10 @@ static void show_summary(void) {
                         "                  Type:          r = RECURSIVE, e = ERRRORCHECK, a = ADAPTIVE /\n"
                         "              Protocol:                               i = INHERIT, p = PROTECT \n");
 
+                if (!track_rt)
+                        fprintf(stderr,
+                                "\n"
+                                "mutrace: Note that the flags column R is only valid in --track-rt mode!\n");
 
         } else
                 fprintf(stderr,
@@ -593,13 +597,13 @@ static void show_summary(void) {
                 fprintf(stderr,
                         "\n"
                         "mutrace: WARNING: %u internal hash collisions detected. Results might not be as reliable as they could be.\n"
-                        "mutrace:          Try to increase $MUTRACE_HASH_SIZE (--hash-size=), which is currently at %u.\n", n_collisions, hash_size);
+                        "mutrace:          Try to increase --hash-size=, which is currently at %u.\n", n_collisions, hash_size);
 
         if (n_self_contended > 0)
                 fprintf(stderr,
                         "\n"
                         "mutrace: WARNING: %u internal mutex contention detected. Results might not be reliable as they could be.\n"
-                        "mutrace:          Try to increase $MUTRACE_HASH_SIZE (--hash-size=), which is currently at %u.\n", n_self_contended, hash_size);
+                        "mutrace:          Try to increase --hash-size=, which is currently at %u.\n", n_self_contended, hash_size);
 
 finish:
         shown_summary = true;
