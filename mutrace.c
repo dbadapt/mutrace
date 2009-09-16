@@ -35,6 +35,7 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <sys/prctl.h>
+#include <sched.h>
 #include <malloc.h>
 
 /* FIXMES:
@@ -42,6 +43,13 @@
  *   - we probably should cover rwlocks, too
  *
  */
+
+#ifndef SCHED_RESET_ON_FORK
+/* "Your libc lacks the definition of SCHED_RESET_ON_FORK. We'll now
+ * define it ourselves, however make sure your kernel is new
+ * enough! */
+#define SCHED_RESET_ON_FORK 0x40000000
+#endif
 
 #if defined(__i386__) || defined(__x86_64__)
 #define DEBUG_TRAP __asm__("int $3")
@@ -56,7 +64,9 @@ struct mutex_info {
         pthread_mutex_t *mutex;
 
         int type, protocol;
-        bool broken;
+        bool broken:1;
+        bool realtime:1;
+        bool dead:1;
 
         unsigned n_lock_level;
 
@@ -90,6 +100,7 @@ static unsigned show_n_contended_min = 0;
 static unsigned show_n_max = 10;
 
 static bool raise_trap = false;
+static bool track_rt = false;
 
 static int (*real_pthread_mutex_init)(pthread_mutex_t *mutex, const pthread_mutexattr_t *mutexattr) = NULL;
 static int (*real_pthread_mutex_destroy)(pthread_mutex_t *mutex) = NULL;
@@ -290,6 +301,9 @@ static void setup(void) {
         if (getenv("MUTRACE_TRAP"))
                 raise_trap = true;
 
+        if (getenv("MUTRACE_TRACK_RT"))
+                track_rt = true;
+
         alive_mutexes = calloc(hash_size, sizeof(struct mutex_info*));
         assert(alive_mutexes);
 
@@ -377,6 +391,10 @@ static int mutex_info_compare(const void *_a, const void *_b) {
 
 static bool mutex_info_show(struct mutex_info *mi) {
 
+        /* Mutexes used by real-time code are always noteworthy */
+        if (mi->realtime)
+                return true;
+
         if (mi->n_locked < show_n_locked_min)
                 return false;
 
@@ -401,40 +419,40 @@ static bool mutex_info_dump(struct mutex_info *mi) {
         return true;
 }
 
-static const char* mutex_type_name(int type) {
+static char mutex_type_name(int type) {
         switch (type) {
 
                 case PTHREAD_MUTEX_NORMAL:
-                        return "normal";
+                        return '-';
 
                 case PTHREAD_MUTEX_RECURSIVE:
-                        return "recursive";
+                        return 'r';
 
                 case PTHREAD_MUTEX_ERRORCHECK:
-                        return "errorcheck";
+                        return 'e';
 
                 case PTHREAD_MUTEX_ADAPTIVE_NP:
-                        return "adaptive";
+                        return 'a';
 
                 default:
-                        return "unknown";
+                        return '?';
         }
 }
 
-static const char* mutex_protocol_name(int protocol) {
+static char mutex_protocol_name(int protocol) {
         switch (protocol) {
 
                 case PTHREAD_PRIO_NONE:
-                        return "none";
+                        return '-';
 
                 case PTHREAD_PRIO_INHERIT:
-                        return "inherit";
+                        return 'i';
 
                 case PTHREAD_PRIO_PROTECT:
-                        return "protect";
+                        return 'p';
 
                 default:
-                        return "unknown";
+                        return '?';
         }
 }
 
@@ -444,7 +462,7 @@ static bool mutex_info_stat(struct mutex_info *mi) {
                 return false;
 
         fprintf(stderr,
-                "%8u %8u %8u %8u %12.3f %12.3f %12.3f %10s %7s%s\n",
+                "%8u %8u %8u %8u %12.3f %12.3f %12.3f %c%c%c%c\n",
                 mi->id,
                 mi->n_locked,
                 mi->n_owner_changed,
@@ -452,9 +470,10 @@ static bool mutex_info_stat(struct mutex_info *mi) {
                 (double) mi->nsec_locked_total / 1000000.0,
                 (double) mi->nsec_locked_total / mi->n_locked / 1000000.0,
                 (double) mi->nsec_locked_max / 1000000.0,
+                mi->broken ? '!' : (mi->dead ? 'x' : '-'),
+                mi->realtime ? 'R' : '-',
                 mutex_type_name(mi->type),
-                mutex_protocol_name(mi->protocol),
-                mi->broken ? " (inconsistent!)" : "");
+                mutex_protocol_name(mi->protocol));
 
         return true;
 }
@@ -524,7 +543,7 @@ static void show_summary(void) {
                         "\n"
                         "mutrace: Showing %u most contended mutexes:\n"
                         "\n"
-                        " Mutex #   Locked  Changed    Cont. tot.Time[ms] avg.Time[ms] max.Time[ms]       Type   Prot.\n",
+                        " Mutex #   Locked  Changed    Cont. tot.Time[ms] avg.Time[ms] max.Time[ms] Flag\n",
                         m);
 
                 for (i = 0, m = 0; i < n && (show_n_max <= 0 || m < show_n_max); i++)
@@ -533,7 +552,19 @@ static void show_summary(void) {
 
                 if (i < n)
                         fprintf(stderr,
-                                "     ...      ...      ...      ...          ...          ...          ...        ...     ...\n");
+                                "     ...      ...      ...      ...          ...          ...          ... ||||\n");
+                else
+                        fprintf(stderr,
+                                "                                                                           ||||\n");
+
+                fprintf(stderr,
+                        "                                                                           /|||\n"
+                        "                 State:                          x = dead, ! = inconsistent /||\n"
+                        "                   Use:                          R = used in realtime thread /|\n"
+                        "                  Type:          r = RECURSIVE, e = ERRRORCHECK, a = ADAPTIVE /\n"
+                        "              Protocol:                               i = INHERIT, p = PROTECT \n");
+
+
         } else
                 fprintf(stderr,
                         "\n"
@@ -589,6 +620,19 @@ void _exit(int status) {
 void _Exit(int status) {
         show_summary();
         real__Exit(status);
+}
+
+static bool is_realtime(void) {
+        int policy;
+
+        policy = sched_getscheduler(_gettid());
+        assert(policy >= 0);
+
+        policy &= ~SCHED_RESET_ON_FORK;
+
+        return
+                policy == SCHED_FIFO ||
+                policy == SCHED_RR;
 }
 
 static bool verify_frame(const char *s) {
@@ -694,6 +738,7 @@ static void mutex_info_remove(unsigned u, pthread_mutex_t *mutex) {
         else
                 alive_mutexes[u] = mi->next;
 
+        mi->dead = true;
         mi->next = dead_mutexes[u];
         dead_mutexes[u] = mi;
 }
@@ -822,6 +867,9 @@ static void mutex_lock(pthread_mutex_t *mutex, bool busy) {
 
                 mi->last_owner = tid;
         }
+
+        if (track_rt && !mi->realtime && is_realtime())
+                mi->realtime = true;
 
         mi->nsec_timestamp = nsec_now();
 

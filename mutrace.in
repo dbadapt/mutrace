@@ -17,7 +17,7 @@
 # You should have received a copy of the GNU Lesser General Public
 # License along with mutrace. If not, see <http://www.gnu.org/licenses/>.
 
-if ! TEMP=`getopt -o h --long hash-size:,frames:,locked-min:,owner-changed-min:,contended-min:,max:,trap,help,all -n mutrace -- "$@"` ; then
+if ! TEMP=`getopt -o +arh --long hash-size:,frames:,locked-min:,owner-changed-min:,contended-min:,max:,trap,help,all -n mutrace -- "$@"` ; then
     exit 1
 fi
 
@@ -60,7 +60,12 @@ while : ; do
                         shift 1
                         ;;
 
-                --all)
+                -r|--track-rt)
+                        export MUTRACE_TRACK_RT=1
+                        shift 1
+                        ;;
+
+                -a|--all)
                         export MUTRACE_LOCKED_MIN=0
                         export MUTRACE_OWNER_CHANGED_MIN=0
                         export MUTRACE_CONTENDED_MIN=0
@@ -72,7 +77,7 @@ while : ; do
                         cat <<EOF
 @PACKAGE_STRING@
 
-Usage: @PACKAGE_NAME@ [OPTIONS...] -- APPLICATION [ARGUMENTS...]
+Usage: @PACKAGE_NAME@ [OPTIONS...] APPLICATION [ARGUMENTS...]
 
 COMMANDS:
   -h, --help                      Show this help
@@ -91,12 +96,13 @@ OPTIONS:
       --all                       Show all mutexes, overrides the values of the
                                   three values above
 
+  -r, --track-rt                  Track for each mutex if it was accessed from
+                                  a realtime thread
       --trap                      Trigger a debugger trap each time a mutex
                                   inconsistency is detected (for use in
                                   conjunction with gdb)
 EOF
-
-                        shift 1
+                        exit 0
                         ;;
                 --)
                         shift
