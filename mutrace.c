@@ -45,6 +45,7 @@
 /* FIXMES:
  *
  *   - we probably should cover rwlocks, too
+ *   - verify rdynamic
  *
  */
 
@@ -66,8 +67,9 @@
 
 struct mutex_info {
         pthread_mutex_t *mutex;
+        pthread_rwlock_t *rwlock;
 
-        int type, protocol;
+        int type, protocol, kind;
         bool broken:1;
         bool realtime:1;
         bool dead:1;
@@ -115,6 +117,15 @@ static int (*real_pthread_mutex_unlock)(pthread_mutex_t *mutex) = NULL;
 static int (*real_pthread_cond_wait)(pthread_cond_t *cond, pthread_mutex_t *mutex) = NULL;
 static int (*real_pthread_cond_timedwait)(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *abstime) = NULL;
 static int (*real_pthread_create)(pthread_t *newthread, const pthread_attr_t *attr, void *(*start_routine) (void *), void *arg) = NULL;
+static int (*real_pthread_rwlock_init)(pthread_rwlock_t *rwlock, const pthread_rwlockattr_t *attr) = NULL;
+static int (*real_pthread_rwlock_destroy)(pthread_rwlock_t *rwlock) = NULL;
+static int (*real_pthread_rwlock_rdlock)(pthread_rwlock_t *rwlock) = NULL;
+static int (*real_pthread_rwlock_tryrdlock)(pthread_rwlock_t *rwlock) = NULL;
+static int (*real_pthread_rwlock_timedrdlock)(pthread_rwlock_t *rwlock, const struct timespec *abstime) = NULL;
+static int (*real_pthread_rwlock_wrlock)(pthread_rwlock_t *rwlock) = NULL;
+static int (*real_pthread_rwlock_trywrlock)(pthread_rwlock_t *rwlock) = NULL;
+static int (*real_pthread_rwlock_timedwrlock)(pthread_rwlock_t *rwlock, const struct timespec *abstime) = NULL;
+static int (*real_pthread_rwlock_unlock)(pthread_rwlock_t *rwlock);
 static void (*real_exit)(int status) __attribute__((noreturn)) = NULL;
 static void (*real__exit)(int status) __attribute__((noreturn)) = NULL;
 static void (*real__Exit)(int status) __attribute__((noreturn)) = NULL;
@@ -218,6 +229,15 @@ static void load_functions(void) {
         LOAD_FUNC(pthread_mutex_timedlock);
         LOAD_FUNC(pthread_mutex_unlock);
         LOAD_FUNC(pthread_create);
+        LOAD_FUNC(pthread_rwlock_init);
+        LOAD_FUNC(pthread_rwlock_destroy);
+        LOAD_FUNC(pthread_rwlock_rdlock);
+        LOAD_FUNC(pthread_rwlock_tryrdlock);
+        LOAD_FUNC(pthread_rwlock_timedrdlock);
+        LOAD_FUNC(pthread_rwlock_wrlock);
+        LOAD_FUNC(pthread_rwlock_trywrlock);
+        LOAD_FUNC(pthread_rwlock_timedwrlock);
+        LOAD_FUNC(pthread_rwlock_unlock);
 
         /* There's some kind of weird incompatibility problem causing
          * pthread_cond_timedwait() to freeze if we don't ask for this
@@ -339,6 +359,15 @@ static unsigned long mutex_hash(pthread_mutex_t *mutex) {
         return u % hash_size;
 }
 
+static unsigned long rwlock_hash(pthread_rwlock_t *rwlock) {
+        unsigned long u;
+
+        u = (unsigned long) rwlock;
+        u /= sizeof(void*);
+
+        return u % hash_size;
+}
+
 static void lock_hash_mutex(unsigned u) {
         int r;
 
@@ -418,7 +447,7 @@ static bool mutex_info_dump(struct mutex_info *mi) {
 
         fprintf(stderr,
                 "\nMutex #%u (0x%p) first referenced by:\n"
-                "%s", mi->id, mi->mutex, mi->stacktrace);
+                "%s", mi->id, mi->mutex ? (void*) mi->mutex : (void*) mi->rwlock, mi->stacktrace);
 
         return true;
 }
@@ -460,13 +489,30 @@ static char mutex_protocol_name(int protocol) {
         }
 }
 
+static char rwlock_kind_name(int kind) {
+        switch (kind) {
+
+                case PTHREAD_RWLOCK_PREFER_READER_NP:
+                        return 'r';
+
+                case PTHREAD_RWLOCK_PREFER_WRITER_NP:
+                        return 'w';
+
+                case PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP:
+                        return 'W';
+
+                default:
+                        return '?';
+        }
+}
+
 static bool mutex_info_stat(struct mutex_info *mi) {
 
         if (!mutex_info_show(mi))
                 return false;
 
         fprintf(stderr,
-                "%8u %8u %8u %8u %12.3f %12.3f %12.3f %c%c%c%c\n",
+                "%8u %8u %8u %8u %12.3f %12.3f %12.3f %c%c%c%c%c%c\n",
                 mi->id,
                 mi->n_locked,
                 mi->n_owner_changed,
@@ -474,10 +520,12 @@ static bool mutex_info_stat(struct mutex_info *mi) {
                 (double) mi->nsec_locked_total / 1000000.0,
                 (double) mi->nsec_locked_total / mi->n_locked / 1000000.0,
                 (double) mi->nsec_locked_max / 1000000.0,
+                mi->mutex ? 'M' : 'W',
                 mi->broken ? '!' : (mi->dead ? 'x' : '-'),
                 track_rt ? (mi->realtime ? 'R' : '-') : '.',
-                mutex_type_name(mi->type),
-                mutex_protocol_name(mi->protocol));
+                mi->mutex ? mutex_type_name(mi->type) : '.',
+                mi->mutex ? mutex_protocol_name(mi->protocol) : '.',
+                mi->rwlock ? rwlock_kind_name(mi->kind) : '.');
 
         return true;
 }
@@ -547,7 +595,7 @@ static void show_summary(void) {
                         "\n"
                         "mutrace: Showing %u most contended mutexes:\n"
                         "\n"
-                        " Mutex #   Locked  Changed    Cont. tot.Time[ms] avg.Time[ms] max.Time[ms] Flag\n",
+                        " Mutex #   Locked  Changed    Cont. tot.Time[ms] avg.Time[ms] max.Time[ms]  Flags\n",
                         m);
 
                 for (i = 0, m = 0; i < n && (show_n_max <= 0 || m < show_n_max); i++)
@@ -556,17 +604,19 @@ static void show_summary(void) {
 
                 if (i < n)
                         fprintf(stderr,
-                                "     ...      ...      ...      ...          ...          ...          ... ||||\n");
+                                "     ...      ...      ...      ...          ...          ...          ... ||||||\n");
                 else
                         fprintf(stderr,
-                                "                                                                           ||||\n");
+                                "                                                                           ||||||\n");
 
                 fprintf(stderr,
-                        "                                                                           /|||\n"
-                        "                 State:                          x = dead, ! = inconsistent /||\n"
-                        "                   Use:                          R = used in realtime thread /|\n"
-                        "                  Type:          r = RECURSIVE, e = ERRRORCHECK, a = ADAPTIVE /\n"
-                        "              Protocol:                               i = INHERIT, p = PROTECT \n");
+                        "                                                                           /|||||\n"
+                        "          Object:                                     M = Mutex, W = RWLock /||||\n"
+                        "           State:                                 x = dead, ! = inconsistent /|||\n"
+                        "             Use:                                 R = used in realtime thread /||\n"
+                        "      Mutex Type:                 r = RECURSIVE, e = ERRRORCHECK, a = ADAPTIVE /|\n"
+                        "  Mutex Protocol:                                      i = INHERIT, p = PROTECT /\n"
+                        "     RWLock Kind: r = PREFER_READER, w = PREFER_WRITER, W = PREFER_WRITER_NONREC \n");
 
                 if (!track_rt)
                         fprintf(stderr,
@@ -1088,4 +1138,369 @@ void backtrace_symbols_fd(void *const *array, int size, int fd) {
         recursive = true;
         real_backtrace_symbols_fd(array, size, fd);
         recursive = false;
+}
+
+static struct mutex_info *rwlock_info_add(unsigned long u, pthread_rwlock_t *rwlock, int kind) {
+        struct mutex_info *mi;
+
+        /* Needs external locking */
+
+        if (alive_mutexes[u])
+                __sync_fetch_and_add(&n_collisions, 1);
+
+        mi = calloc(1, sizeof(struct mutex_info));
+        assert(mi);
+
+        mi->rwlock = rwlock;
+        mi->kind = kind;
+        mi->stacktrace = generate_stacktrace();
+
+        mi->next = alive_mutexes[u];
+        alive_mutexes[u] = mi;
+
+        return mi;
+}
+
+static void rwlock_info_remove(unsigned u, pthread_rwlock_t *rwlock) {
+        struct mutex_info *mi, *p;
+
+        /* Needs external locking */
+
+        for (mi = alive_mutexes[u], p = NULL; mi; p = mi, mi = mi->next)
+                if (mi->rwlock == rwlock)
+                        break;
+
+        if (!mi)
+                return;
+
+        if (p)
+                p->next = mi->next;
+        else
+                alive_mutexes[u] = mi->next;
+
+        mi->dead = true;
+        mi->next = dead_mutexes[u];
+        dead_mutexes[u] = mi;
+}
+
+static struct mutex_info *rwlock_info_acquire(pthread_rwlock_t *rwlock) {
+        unsigned long u;
+        struct mutex_info *mi;
+
+        u = rwlock_hash(rwlock);
+        lock_hash_mutex(u);
+
+        for (mi = alive_mutexes[u]; mi; mi = mi->next)
+                if (mi->rwlock == rwlock)
+                        return mi;
+
+        /* FIXME: We assume that static mutexes are RWLOCK_DEFAULT,
+         * which might not actually be correct */
+        return rwlock_info_add(u, rwlock, PTHREAD_RWLOCK_DEFAULT_NP);
+}
+
+static void rwlock_info_release(pthread_rwlock_t *rwlock) {
+        unsigned long u;
+
+        u = rwlock_hash(rwlock);
+        unlock_hash_mutex(u);
+}
+
+int pthread_rwlock_init(pthread_rwlock_t *rwlock, const pthread_rwlockattr_t *attr) {
+        int r;
+        unsigned long u;
+
+        if (UNLIKELY(!initialized && recursive)) {
+                static const pthread_rwlock_t template = PTHREAD_RWLOCK_INITIALIZER;
+                /* Now this is incredibly ugly. */
+
+                memcpy(rwlock, &template, sizeof(pthread_rwlock_t));
+                return 0;
+        }
+
+        load_functions();
+
+        r = real_pthread_rwlock_init(rwlock, attr);
+        if (r != 0)
+                return r;
+
+        if (LIKELY(initialized && !recursive)) {
+                int kind = PTHREAD_RWLOCK_DEFAULT_NP;
+
+                recursive = true;
+                u = rwlock_hash(rwlock);
+                lock_hash_mutex(u);
+
+                rwlock_info_remove(u, rwlock);
+
+                if (attr) {
+                        int k;
+
+                        k = pthread_rwlockattr_getkind_np(attr, &kind);
+                        assert(k == 0);
+                }
+
+                rwlock_info_add(u, rwlock, kind);
+
+                unlock_hash_mutex(u);
+                recursive = false;
+        }
+
+        return r;
+}
+
+int pthread_rwlock_destroy(pthread_rwlock_t *rwlock) {
+        unsigned long u;
+
+        assert(initialized || !recursive);
+
+        load_functions();
+
+        if (LIKELY(initialized && !recursive)) {
+                recursive = true;
+
+                u = rwlock_hash(rwlock);
+                lock_hash_mutex(u);
+
+                rwlock_info_remove(u, rwlock);
+
+                unlock_hash_mutex(u);
+
+                recursive = false;
+        }
+
+        return real_pthread_rwlock_destroy(rwlock);
+}
+
+static void rwlock_lock(pthread_rwlock_t *rwlock, bool for_write, bool busy) {
+        struct mutex_info *mi;
+        pid_t tid;
+
+        if (UNLIKELY(!initialized || recursive))
+                return;
+
+        recursive = true;
+        mi = rwlock_info_acquire(rwlock);
+
+        if (mi->n_lock_level > 0 && for_write) {
+                __sync_fetch_and_add(&n_broken, 1);
+                mi->broken = true;
+
+                if (raise_trap)
+                        DEBUG_TRAP;
+        }
+
+        mi->n_lock_level++;
+        mi->n_locked++;
+
+        if (busy)
+                mi->n_contended++;
+
+        tid = _gettid();
+        if (mi->last_owner != tid) {
+                if (mi->last_owner != 0)
+                        mi->n_owner_changed++;
+
+                mi->last_owner = tid;
+        }
+
+        if (track_rt && !mi->realtime && is_realtime())
+                mi->realtime = true;
+
+        mi->nsec_timestamp = nsec_now();
+
+        rwlock_info_release(rwlock);
+        recursive = false;
+}
+
+int pthread_rwlock_rdlock(pthread_rwlock_t *rwlock) {
+        int r;
+        bool busy;
+
+        if (UNLIKELY(!initialized && recursive)) {
+                assert(!threads_existing);
+                return 0;
+        }
+
+        load_functions();
+
+        r = real_pthread_rwlock_tryrdlock(rwlock);
+        if (UNLIKELY(r != EBUSY && r != 0))
+                return r;
+
+        if (UNLIKELY((busy = (r == EBUSY)))) {
+                r = real_pthread_rwlock_rdlock(rwlock);
+
+                if (UNLIKELY(r == ETIMEDOUT))
+                        busy = true;
+                else if (UNLIKELY(r != 0))
+                        return r;
+        }
+
+        rwlock_lock(rwlock, false, busy);
+        return r;
+}
+
+int pthread_rwlock_tryrdlock(pthread_rwlock_t *rwlock) {
+        int r;
+
+        if (UNLIKELY(!initialized && recursive)) {
+                assert(!threads_existing);
+                return 0;
+        }
+
+        load_functions();
+
+        r = real_pthread_rwlock_tryrdlock(rwlock);
+        if (UNLIKELY(r != EBUSY && r != 0))
+                return r;
+
+        rwlock_lock(rwlock, false, false);
+        return r;
+}
+
+int pthread_rwlock_timedrdlock(pthread_rwlock_t *rwlock, const struct timespec *abstime) {
+        int r;
+        bool busy;
+
+        if (UNLIKELY(!initialized && recursive)) {
+                assert(!threads_existing);
+                return 0;
+        }
+
+        load_functions();
+
+        r = real_pthread_rwlock_tryrdlock(rwlock);
+        if (UNLIKELY(r != EBUSY && r != 0))
+                return r;
+
+        if (UNLIKELY((busy = (r == EBUSY)))) {
+                r = real_pthread_rwlock_timedrdlock(rwlock, abstime);
+
+                if (UNLIKELY(r == ETIMEDOUT))
+                        busy = true;
+                else if (UNLIKELY(r != 0))
+                        return r;
+        }
+
+        rwlock_lock(rwlock, false, busy);
+        return r;
+}
+
+int pthread_rwlock_wrlock(pthread_rwlock_t *rwlock) {
+        int r;
+        bool busy;
+
+        if (UNLIKELY(!initialized && recursive)) {
+                assert(!threads_existing);
+                return 0;
+        }
+
+        load_functions();
+
+        r = real_pthread_rwlock_trywrlock(rwlock);
+        if (UNLIKELY(r != EBUSY && r != 0))
+                return r;
+
+        if (UNLIKELY((busy = (r == EBUSY)))) {
+                r = real_pthread_rwlock_wrlock(rwlock);
+
+                if (UNLIKELY(r == ETIMEDOUT))
+                        busy = true;
+                else if (UNLIKELY(r != 0))
+                        return r;
+        }
+
+        rwlock_lock(rwlock, true, busy);
+        return r;
+}
+
+int pthread_rwlock_trywrlock(pthread_rwlock_t *rwlock) {
+        int r;
+
+        if (UNLIKELY(!initialized && recursive)) {
+                assert(!threads_existing);
+                return 0;
+        }
+
+        load_functions();
+
+        r = real_pthread_rwlock_trywrlock(rwlock);
+        if (UNLIKELY(r != EBUSY && r != 0))
+                return r;
+
+        rwlock_lock(rwlock, true, false);
+        return r;
+}
+
+int pthread_rwlock_timedwrlock(pthread_rwlock_t *rwlock, const struct timespec *abstime) {
+        int r;
+        bool busy;
+
+        if (UNLIKELY(!initialized && recursive)) {
+                assert(!threads_existing);
+                return 0;
+        }
+
+        load_functions();
+
+        r = real_pthread_rwlock_trywrlock(rwlock);
+        if (UNLIKELY(r != EBUSY && r != 0))
+                return r;
+
+        if (UNLIKELY((busy = (r == EBUSY)))) {
+                r = real_pthread_rwlock_timedwrlock(rwlock, abstime);
+
+                if (UNLIKELY(r == ETIMEDOUT))
+                        busy = true;
+                else if (UNLIKELY(r != 0))
+                        return r;
+        }
+
+        rwlock_lock(rwlock, true, busy);
+        return r;
+}
+
+static void rwlock_unlock(pthread_rwlock_t *rwlock) {
+        struct mutex_info *mi;
+        uint64_t t;
+
+        if (UNLIKELY(!initialized || recursive))
+                return;
+
+        recursive = true;
+        mi = rwlock_info_acquire(rwlock);
+
+        if (mi->n_lock_level <= 0) {
+                __sync_fetch_and_add(&n_broken, 1);
+                mi->broken = true;
+
+                if (raise_trap)
+                        DEBUG_TRAP;
+        }
+
+        mi->n_lock_level--;
+
+        t = nsec_now() - mi->nsec_timestamp;
+        mi->nsec_locked_total += t;
+
+        if (t > mi->nsec_locked_max)
+                mi->nsec_locked_max = t;
+
+        rwlock_info_release(rwlock);
+        recursive = false;
+}
+
+int pthread_rwlock_unlock(pthread_rwlock_t *rwlock) {
+
+        if (UNLIKELY(!initialized && recursive)) {
+                assert(!threads_existing);
+                return 0;
+        }
+
+        load_functions();
+
+        rwlock_unlock(rwlock);
+
+        return real_pthread_rwlock_unlock(rwlock);
 }
