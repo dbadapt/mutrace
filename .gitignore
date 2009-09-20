@@ -25,3 +25,4 @@ libtool
 ltmain.sh
 install-sh
 mutrace
+matrace

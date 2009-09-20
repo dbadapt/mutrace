@@ -19,19 +19,23 @@ EXTRA_DIST = \
 	bootstrap.sh \
 	LGPL \
 	README \
-	mutrace.in
+	mutrace.in \
+	matrace.in
 
 #include_HEADERS = \
 #	mutrace.h
 
 lib_LTLIBRARIES = \
-	libmutrace.la
+	libmutrace.la \
+	libmatrace.la
 
 bin_SCRIPTS = \
-	mutrace
+	mutrace \
+	matrace
 
 CLEANFILES = \
-	mutrace
+	mutrace \
+	matrace
 
 libmutrace_la_SOURCES = \
 	mutrace.c
@@ -49,12 +53,34 @@ libmutrace_la_CFLAGS = \
 	$(PTHREAD_CFLAGS) \
 	-DSONAME=\"libmutrace.so\"
 
+libmatrace_la_SOURCES = \
+	matrace.c
+libmatrace_la_LDFLAGS = \
+	-avoid-version \
+	-module \
+	-export-dynamic \
+	-shared \
+	-prefer-pic
+libmatrace_la_LIBADD = \
+	$(PTHREAD_LIBS) \
+	-lrt \
+	-ldl
+libmatrace_la_CFLAGS = \
+	$(PTHREAD_CFLAGS) \
+	-DSONAME=\"libmatrace.so\"
+
 mutrace: mutrace.in Makefile
 	sed -e 's,@PACKAGE_STRING\@,$(PACKAGE_STRING),g' \
                 -e 's,@PACKAGE_NAME\@,$(PACKAGE_NAME),g' < $< > $@
 	chmod +x mutrace
 
+matrace: matrace.in Makefile
+	sed -e 's,@PACKAGE_STRING\@,$(PACKAGE_STRING),g' \
+                -e 's,@PACKAGE_NAME\@,$(PACKAGE_NAME),g' < $< > $@
+	chmod +x matrace
+
 install-exec-hook:
 	rm -f $(DESTDIR)$(libdir)/libmutrace.la
+	rm -f $(DESTDIR)$(libdir)/libmatrace.la
 
 ACLOCAL_AMFLAGS = -I m4
