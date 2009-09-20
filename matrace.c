@@ -167,6 +167,12 @@ static void setup(void) {
         if (LIKELY(initialized))
                 return;
 
+        if (!dlsym(NULL, "main"))
+                fprintf(stderr,
+                        "mutrace: Application appears to be compiled without -rdynamic. It might be a\n"
+                        "mutrace: good idea to recompile with -rdynamic enabled since this produces more\n"
+                        "mutrace: useful stack traces.\n\n");
+
         if (__malloc_hook) {
                 fprintf(stderr,
                         "matrace: Detected non-glibc memory allocator. Your program uses some\n"

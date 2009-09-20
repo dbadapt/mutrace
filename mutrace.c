@@ -42,13 +42,6 @@
 #error "This stuff only works on Linux!"
 #endif
 
-/* FIXMES:
- *
- *   - we probably should cover rwlocks, too
- *   - verify rdynamic
- *
- */
-
 #ifndef SCHED_RESET_ON_FORK
 /* "Your libc lacks the definition of SCHED_RESET_ON_FORK. We'll now
  * define it ourselves, however make sure your kernel is new
@@ -266,6 +259,12 @@ static void setup(void) {
 
         if (LIKELY(initialized))
                 return;
+
+        if (!dlsym(NULL, "main"))
+                fprintf(stderr,
+                        "mutrace: Application appears to be compiled without -rdynamic. It might be a\n"
+                        "mutrace: good idea to recompile with -rdynamic enabled since this produces more\n"
+                        "mutrace: useful stack traces.\n\n");
 
         if (__malloc_hook) {
                 fprintf(stderr,
