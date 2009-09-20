@@ -537,6 +537,7 @@ static void show_summary(void) {
         struct mutex_info *mi, **table;
         unsigned n, u, i, m;
         uint64_t t;
+        long n_cpus;
 
         real_pthread_mutex_lock(&summary_mutex);
 
@@ -636,6 +637,19 @@ static void show_summary(void) {
         fprintf(stderr,
                 "\n"
                 "mutrace: Total runtime is %0.3f ms.\n", (double) t / 1000000.0);
+
+        n_cpus = sysconf(_SC_NPROCESSORS_ONLN);
+        assert(n_cpus >= 1);
+
+        if (n_cpus <= 1)
+                fprintf(stderr,
+                        "\n"
+                        "mutrace: WARNING: Results for uniprocessor machine. Results might be more interesting\n"
+                        "                  when run on an SMP machine!\n");
+        else
+                fprintf(stderr,
+                        "\n"
+                        "mutrace: Results for SMP with %li processors.\n", n_cpus);
 
         if (n_broken > 0)
                 fprintf(stderr,
