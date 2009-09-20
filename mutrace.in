@@ -17,11 +17,13 @@
 # You should have received a copy of the GNU Lesser General Public
 # License along with mutrace. If not, see <http://www.gnu.org/licenses/>.
 
-if ! TEMP=`getopt -o +arh --long hash-size:,frames:,locked-min:,owner-changed-min:,contended-min:,max:,trap,help,all -n mutrace -- "$@"` ; then
+if ! TEMP=`getopt -o +ardh --long hash-size:,frames:,locked-min:,owner-changed-min:,contended-min:,max:,trap,help,all,debug-info -n mutrace -- "$@"` ; then
     exit 1
 fi
 
 eval set -- "$TEMP"
+
+debug_info=0
 
 while : ; do
         case $1 in
@@ -65,6 +67,11 @@ while : ; do
                         shift 1
                         ;;
 
+                -d|--debug-info)
+                        debug_info=1
+                        shift 1
+                        ;;
+
                 -a|--all)
                         export MUTRACE_LOCKED_MIN=0
                         export MUTRACE_OWNER_CHANGED_MIN=0
@@ -77,7 +84,7 @@ while : ; do
                         cat <<EOF
 @PACKAGE_STRING@
 
-Usage: @PACKAGE_NAME@ [OPTIONS...] APPLICATION [ARGUMENTS...]
+Usage: mutrace [OPTIONS...] APPLICATION [ARGUMENTS...]
 
 COMMANDS:
   -h, --help                      Show this help
@@ -85,6 +92,7 @@ COMMANDS:
 OPTIONS:
       --hash-size=INTEGER         Set size of mutex hash table
       --frames=INTEGER            Set number of frames to show in stack traces
+  -d, --debug-info                Make use of debug information in stack traces
       --max=INTEGER               Show this many mutexes at maximum
 
       --locked-min=INTEGER        Only show mutexes that have been locked at
@@ -126,7 +134,11 @@ fi
 if [ x"$LD_PRELOAD" = x ] ; then
         export LD_PRELOAD="libmutrace.so"
 else
-        export LD_PRELOAD="$LD_PRELOAD libmutrace.so"
+        export LD_PRELOAD="$LD_PRELOAD:libmutrace.so"
+fi
+
+if [ x"$debug_info" = x1 ] ; then
+        export LD_PRELOAD="$LD_PRELOAD:libmutrace-backtrace-symbols.so"
 fi
 
 exec "$@"

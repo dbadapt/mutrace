@@ -27,7 +27,8 @@ EXTRA_DIST = \
 
 lib_LTLIBRARIES = \
 	libmutrace.la \
-	libmatrace.la
+	libmatrace.la \
+	libmutrace-backtrace-symbols.la
 
 bin_SCRIPTS = \
 	mutrace \
@@ -69,6 +70,21 @@ libmatrace_la_CFLAGS = \
 	$(PTHREAD_CFLAGS) \
 	-DSONAME=\"libmatrace.so\"
 
+libmutrace_backtrace_symbols_la_SOURCES = \
+	backtrace-symbols.c
+libmutrace_backtrace_symbols_la_LDFLAGS = \
+	-avoid-version \
+	-module \
+	-export-dynamic \
+	-shared \
+	-prefer-pic
+libmutrace_backtrace_symbols_la_LIBADD = \
+	$(PTHREAD_LIBS) \
+	-lrt \
+	-ldl
+libmutrace_backtrace_symbols_la_CFLAGS = \
+	$(PTHREAD_CFLAGS)
+
 mutrace: mutrace.in Makefile
 	sed -e 's,@PACKAGE_STRING\@,$(PACKAGE_STRING),g' \
                 -e 's,@PACKAGE_NAME\@,$(PACKAGE_NAME),g' < $< > $@
@@ -82,5 +98,6 @@ matrace: matrace.in Makefile
 install-exec-hook:
 	rm -f $(DESTDIR)$(libdir)/libmutrace.la
 	rm -f $(DESTDIR)$(libdir)/libmatrace.la
+	rm -f $(DESTDIR)$(libdir)/libmutrace-backtrace-symbols.la
 
 ACLOCAL_AMFLAGS = -I m4

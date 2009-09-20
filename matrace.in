@@ -17,17 +17,24 @@
 # You should have received a copy of the GNU Lesser General Public
 # License along with mutrace. If not, see <http://www.gnu.org/licenses/>.
 
-if ! TEMP=`getopt -o +h --long frames:,help -n matrace -- "$@"` ; then
+if ! TEMP=`getopt -o +dh --long frames:,debug-info,help -n matrace -- "$@"` ; then
     exit 1
 fi
 
 eval set -- "$TEMP"
+
+debug_info=0
 
 while : ; do
         case $1 in
                 --frames)
                         export MATRACE_FRAMES="$2"
                         shift 2
+                        ;;
+
+                -d|--debug-info)
+                        debug_info=1
+                        shift 1
                         ;;
 
                 -h|--help)
@@ -41,6 +48,7 @@ COMMANDS:
 
 OPTIONS:
       --frames=INTEGER            Set number of frames to show in stack traces
+  -d, --debug-info                Make use of debug information in stack traces
 EOF
                         exit 0
                         ;;
@@ -67,6 +75,10 @@ if [ x"$LD_PRELOAD" = x ] ; then
         export LD_PRELOAD="libmatrace.so"
 else
         export LD_PRELOAD="$LD_PRELOAD libmatrace.so"
+fi
+
+if [ x"$debug_info" = x1 ] ; then
+        export LD_PRELOAD="$LD_PRELOAD:libmutrace-backtrace-symbols.so"
 fi
 
 exec "$@"

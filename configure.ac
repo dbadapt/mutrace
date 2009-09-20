@@ -72,6 +72,9 @@ AC_CHECK_HEADERS([sys/poll.h])
 AC_CHECK_HEADERS([sys/ioctl.h])
 AC_CHECK_HEADERS([byteswap.h])
 
+AC_SEARCH_LIBS([bfd_init], [bfd], [], [AC_MSG_ERROR([*** libbfd not found])])
+AC_CHECK_HEADERS([bfd.h], [], [AC_MSG_ERROR([*** POSIX caps headers not found])])
+
 #### Typdefs, structures, etc. ####
 
 AC_C_CONST
