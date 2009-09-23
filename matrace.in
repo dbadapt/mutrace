@@ -74,7 +74,7 @@ fi
 if [ x"$LD_PRELOAD" = x ] ; then
         export LD_PRELOAD="libmatrace.so"
 else
-        export LD_PRELOAD="$LD_PRELOAD libmatrace.so"
+        export LD_PRELOAD="$LD_PRELOAD:libmatrace.so"
 fi
 
 if [ x"$debug_info" = x1 ] ; then
