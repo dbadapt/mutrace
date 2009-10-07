@@ -52,6 +52,7 @@
 #if defined(__i386__) || defined(__x86_64__)
 #define DEBUG_TRAP __asm__("int $3")
 #else
+#include <signal.h>
 #define DEBUG_TRAP raise(SIGTRAP)
 #endif
 
