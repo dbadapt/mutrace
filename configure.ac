@@ -20,7 +20,7 @@
 
 AC_PREREQ(2.61)
 
-AC_INIT([mutrace], 0.1, [mzzhgenpr (at) 0pointer (dot) net])
+AC_INIT([mutrace], 0.2, [mzzhgenpr (at) 0pointer (dot) net])
 AC_CONFIG_SRCDIR([mutrace.c])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_MACRO_DIR(m4)
