@@ -17,8 +17,9 @@
 
 EXTRA_DIST = \
 	bootstrap.sh \
-	LGPL \
-	GPL \
+	GPL2 \
+	LGPL3 \
+	GPL3 \
 	README \
 	mutrace.in \
 	matrace.in
