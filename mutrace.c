@@ -59,6 +59,11 @@
 #define LIKELY(x) (__builtin_expect(!!(x),1))
 #define UNLIKELY(x) (__builtin_expect(!!(x),0))
 
+struct stacktrace_info {
+        void **frames;
+        int nb_frame;
+};
+
 struct mutex_info {
         pthread_mutex_t *mutex;
         pthread_rwlock_t *rwlock;
@@ -80,7 +85,7 @@ struct mutex_info {
         uint64_t nsec_locked_max;
 
         uint64_t nsec_timestamp;
-        char *stacktrace;
+        struct stacktrace_info stacktrace;
 
         unsigned id;
 
@@ -139,6 +144,8 @@ static uint64_t nsec_timestamp_setup;
 
 static void setup(void) __attribute ((constructor));
 static void shutdown(void) __attribute ((destructor));
+
+static char *stacktrace_to_string(struct stacktrace_info stacktrace);
 
 static pid_t _gettid(void) {
         return (pid_t) syscall(SYS_gettid);
@@ -441,13 +448,18 @@ static bool mutex_info_show(struct mutex_info *mi) {
 }
 
 static bool mutex_info_dump(struct mutex_info *mi) {
+        char *stacktrace_str;
 
         if (!mutex_info_show(mi))
                 return false;
 
+        stacktrace_str = stacktrace_to_string(mi->stacktrace);
+
         fprintf(stderr,
                 "\nMutex #%u (0x%p) first referenced by:\n"
-                "%s", mi->id, mi->mutex ? (void*) mi->mutex : (void*) mi->rwlock, mi->stacktrace);
+                "%s", mi->id, mi->mutex ? (void*) mi->mutex : (void*) mi->rwlock, stacktrace_str);
+
+        free(stacktrace_str);
 
         return true;
 }
@@ -754,33 +766,36 @@ static int light_backtrace(void **buffer, int size) {
 #endif
 }
 
-static char* generate_stacktrace(void) {
-        void **buffer;
+static struct stacktrace_info generate_stacktrace(void) {
+        struct stacktrace_info stacktrace;
+
+        stacktrace.frames = malloc(sizeof(void*) * frames_max);
+        assert(stacktrace.frames);
+
+        stacktrace.nb_frame = light_backtrace(stacktrace.frames, frames_max);
+        assert(stacktrace.nb_frame >= 0);
+
+        return stacktrace;
+}
+
+static char *stacktrace_to_string(struct stacktrace_info stacktrace) {
         char **strings, *ret, *p;
-        int n, i;
+        int i;
         size_t k;
         bool b;
 
-        buffer = malloc(sizeof(void*) * frames_max);
-        assert(buffer);
-
-        n = light_backtrace(buffer, frames_max);
-        assert(n >= 0);
-
-        strings = real_backtrace_symbols(buffer, n);
+        strings = real_backtrace_symbols(stacktrace.frames, stacktrace.nb_frame);
         assert(strings);
 
-        free(buffer);
-
         k = 0;
-        for (i = 0; i < n; i++)
+        for (i = 0; i < stacktrace.nb_frame; i++)
                 k += strlen(strings[i]) + 2;
 
         ret = malloc(k + 1);
         assert(ret);
 
         b = false;
-        for (i = 0, p = ret; i < n; i++) {
+        for (i = 0, p = ret; i < stacktrace.nb_frame; i++) {
                 if (!b && !verify_frame(strings[i]))
                         continue;
 
