@@ -724,6 +724,36 @@ static bool verify_frame(const char *s) {
         return true;
 }
 
+static int light_backtrace(void **buffer, int size) {
+#if defined(__i386__) || defined(__x86_64__)
+        int osize = 0;
+        void *stackaddr;
+        size_t stacksize;
+        void *frame;
+
+        pthread_attr_t attr;
+        pthread_getattr_np(pthread_self(), &attr);
+        pthread_attr_getstack(&attr, &stackaddr, &stacksize);
+        pthread_attr_destroy(&attr);
+
+#if defined(__i386__)
+        __asm__("mov %%ebp, %[frame]": [frame] "=r" (frame));
+#elif defined(__x86_64__)
+        __asm__("mov %%rbp, %[frame]": [frame] "=r" (frame));
+#endif
+        while (osize < size &&
+               frame >= stackaddr &&
+               frame < (void *)((char *)stackaddr + stacksize)) {
+                buffer[osize++] = *((void **)frame + 1);
+                frame = *(void **)frame;
+        }
+
+        return osize;
+#else
+        return real_backtrace(buffer, size);
+#endif
+}
+
 static char* generate_stacktrace(void) {
         void **buffer;
         char **strings, *ret, *p;
@@ -734,7 +764,7 @@ static char* generate_stacktrace(void) {
         buffer = malloc(sizeof(void*) * frames_max);
         assert(buffer);
 
-        n = real_backtrace(buffer, frames_max);
+        n = light_backtrace(buffer, frames_max);
         assert(n >= 0);
 
         strings = real_backtrace_symbols(buffer, n);
