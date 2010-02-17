@@ -218,10 +218,16 @@ static char** translate_addresses_buf(bfd * abfd, bfd_vma *addr, int naddr)
 			total += snprintf(buf, len, "[0x%llx] \?\?() \?\?:0",(long long unsigned int) addr[naddr-1]) + 1;
 		} else {
 			const char *name;
+			char *demangled_name = NULL;
 
 			name = functionname;
 			if (name == NULL || *name == '\0')
 				name = "??";
+			else {
+				demangled_name = bfd_demangle(abfd, name, 0);
+				if (demangled_name != NULL)
+					name = demangled_name;
+			}
 			if (filename != NULL) {
 				char *h;
 
@@ -232,6 +238,8 @@ static char** translate_addresses_buf(bfd * abfd, bfd_vma *addr, int naddr)
 			total += snprintf(buf, len, "%s:%u\t%s()", filename ? filename : "??",
 			       line, name) + 1;
 
+			if (demangled_name != NULL)
+				free(demangled_name);
 		}
 		if (state == Print) {
 			/* set buf just past the end of string */
