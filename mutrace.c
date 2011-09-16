@@ -277,7 +277,10 @@ static void setup(void) {
                         "mutrace: good idea to recompile with -rdynamic enabled since this produces more\n"
                         "mutrace: useful stack traces.\n\n");
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
         if (__malloc_hook) {
+#pragma GCC diagnostic pop
                 fprintf(stderr,
                         "mutrace: Detected non-glibc memory allocator. Your program uses some\n"
                         "mutrace: alternative memory allocator (jemalloc?) which is not compatible with\n"
