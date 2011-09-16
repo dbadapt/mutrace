@@ -37,6 +37,7 @@
 #include <sys/prctl.h>
 #include <sched.h>
 #include <malloc.h>
+#include <signal.h>
 
 #if !defined (__linux__) || !defined(__GLIBC__)
 #error "This stuff only works on Linux!"
@@ -52,7 +53,6 @@
 #if defined(__i386__) || defined(__x86_64__)
 #define DEBUG_TRAP __asm__("int $3")
 #else
-#include <signal.h>
 #define DEBUG_TRAP raise(SIGTRAP)
 #endif
 
@@ -146,6 +146,8 @@ static void setup(void) __attribute ((constructor));
 static void shutdown(void) __attribute ((destructor));
 
 static char *stacktrace_to_string(struct stacktrace_info stacktrace);
+
+static void sigusr1_cb(int sig);
 
 static pid_t _gettid(void) {
         return (pid_t) syscall(SYS_gettid);
@@ -259,6 +261,7 @@ static void load_functions(void) {
 }
 
 static void setup(void) {
+        struct sigaction sigusr_action;
         pthread_mutex_t *m, *last;
         int r;
         unsigned t;
@@ -349,6 +352,13 @@ static void setup(void) {
 
                 assert(r == 0);
         }
+
+        /* Listen for SIGUSR1 and print out a summary of what's happened so far
+         * when we receive it. */
+        sigusr_action.sa_handler = sigusr1_cb;
+        sigemptyset(&sigusr_action.sa_mask);
+        sigusr_action.sa_flags = 0;
+        sigaction(SIGUSR1, &sigusr_action, NULL);
 
         nsec_timestamp_setup = nsec_now();
 
@@ -542,19 +552,11 @@ static bool mutex_info_stat(struct mutex_info *mi) {
         return true;
 }
 
-static void show_summary(void) {
-        static pthread_mutex_t summary_mutex = PTHREAD_MUTEX_INITIALIZER;
-        static bool shown_summary = false;
-
+static void show_summary_internal(void) {
         struct mutex_info *mi, **table;
         unsigned n, u, i, m;
         uint64_t t;
         long n_cpus;
-
-        real_pthread_mutex_lock(&summary_mutex);
-
-        if (shown_summary)
-                goto finish;
 
         t = nsec_now() - nsec_timestamp_setup;
 
@@ -576,7 +578,7 @@ static void show_summary(void) {
         if (n <= 0) {
                 fprintf(stderr,
                         "mutrace: No mutexes used.\n");
-                goto finish;
+                return;
         }
 
         fprintf(stderr,
@@ -680,9 +682,33 @@ static void show_summary(void) {
                         "\n"
                         "mutrace: WARNING: %u internal mutex contention detected. Results might not be reliable as they could be.\n"
                         "mutrace:          Try to increase --hash-size=, which is currently at %u.\n", n_self_contended, hash_size);
+}
+
+/* Print out the summary only the first time this is called. */
+static void show_summary(void) {
+        static pthread_mutex_t summary_mutex = PTHREAD_MUTEX_INITIALIZER;
+        static bool shown_summary = false;
+
+        real_pthread_mutex_lock(&summary_mutex);
+
+        if (shown_summary)
+                goto finish;
+
+        show_summary_internal();
 
 finish:
         shown_summary = true;
+
+        real_pthread_mutex_unlock(&summary_mutex);
+}
+
+/* Print out the summary every time this is called. */
+static void show_summary_again(void) {
+        static pthread_mutex_t summary_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+        real_pthread_mutex_lock(&summary_mutex);
+
+        show_summary_internal();
 
         real_pthread_mutex_unlock(&summary_mutex);
 }
@@ -704,6 +730,10 @@ void _exit(int status) {
 void _Exit(int status) {
         show_summary();
         real__Exit(status);
+}
+
+void sigusr1_cb(int sig) {
+        show_summary_again();
 }
 
 static bool is_realtime(void) {
