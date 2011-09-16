@@ -38,6 +38,7 @@
 #include <sched.h>
 #include <malloc.h>
 #include <signal.h>
+#include <math.h>
 
 #if !defined (__linux__) || !defined(__GLIBC__)
 #error "This stuff only works on Linux!"
@@ -146,6 +147,44 @@ static volatile bool threads_existing = false;
 
 static uint64_t nsec_timestamp_setup;
 
+/* Must be kept in sync with summary_order_details. */
+typedef enum {
+        ORDER_ID = 0,
+        ORDER_N_LOCKED,
+        ORDER_N_OWNER_CHANGED,
+        ORDER_N_CONTENDED,
+        ORDER_NSEC_LOCKED_TOTAL,
+        ORDER_NSEC_LOCKED_MAX,
+        ORDER_NSEC_LOCKED_AVG,
+        ORDER_NSEC_CONTENDED_TOTAL,
+        ORDER_NSEC_CONTENDED_AVG,
+        ORDER_NSEC_READ_CONTENDED_TOTAL,
+} SummaryOrder;
+#define ORDER_INVALID ORDER_NSEC_READ_CONTENDED_TOTAL + 1 /* first invalid order */
+
+typedef struct {
+        const char *command; /* as passed to --order command line argument */
+        const char *ui_string; /* as displayed by show_summary() */
+} SummaryOrderDetails;
+
+/* Must be kept in sync with SummaryOrder. */
+static const SummaryOrderDetails summary_order_details[] = {
+        { "id", "mutex number" },
+        { "n-locked", "lock count" },
+        { "n-owner-changed", "owner change count" },
+        { "n-contended", "contention count" },
+        { "nsec-locked-total", "total time locked" },
+        { "nsec-locked-max", "maximum time locked" },
+        { "nsec-locked-avg", "average time locked" },
+        { "nsec-contended-total", "total time contended" },
+        { "nsec-contended-avg", "average time contended" },
+        { "nsec-read-contended-total", "total time (read) contended" },
+};
+
+static SummaryOrder summary_order = ORDER_N_CONTENDED;
+
+static SummaryOrder summary_order_from_command(const char *command);
+
 static void setup(void) __attribute ((constructor));
 static void shutdown(void) __attribute ((destructor));
 
@@ -200,6 +239,17 @@ static int parse_env(const char *n, unsigned *t) {
                 return -1;
 
         return 0;
+}
+
+/* Maximum tolerated relative error when comparing doubles */
+#define MAX_RELATIVE_ERROR 0.001
+
+static bool doubles_equal(double a, double b) {
+        /* Make sure we don't divide by zero. */
+        if (fpclassify(b) == FP_ZERO)
+                return (fpclassify(a) == FP_ZERO);
+
+        return ((a - b) / b <= MAX_RELATIVE_ERROR);
 }
 
 #define LOAD_FUNC(name)                                                 \
@@ -269,6 +319,7 @@ static void setup(void) {
         pthread_mutex_t *m, *last;
         int r;
         unsigned t;
+        const char *s;
 
         load_functions();
 
@@ -338,6 +389,15 @@ static void setup(void) {
                 fprintf(stderr, "mutrace: WARNING: Failed to parse $MUTRACE_MAX.\n");
         else
                 show_n_max = t;
+
+        s = getenv("MUTRACE_SUMMARY_ORDER");
+        if (s != NULL) {
+                t = summary_order_from_command(s);
+                if (t == ORDER_INVALID)
+                        fprintf(stderr, "mutrace: WARNING: Failed to parse $MUTRACE_SUMMARY_ORDER.\n");
+                else
+                        summary_order = t;
+        }
 
         if (getenv("MUTRACE_TRAP"))
                 raise_trap = true;
@@ -417,33 +477,60 @@ static int mutex_info_compare(const void *_a, const void *_b) {
                 *a = *(const struct mutex_info**) _a,
                 *b = *(const struct mutex_info**) _b;
 
-        if (a->n_contended > b->n_contended)
-                return -1;
-        else if (a->n_contended < b->n_contended)
-                return 1;
+        /* Order by the user's chosen ordering first, then fall back to a static
+         * ordering. */
+        switch (summary_order) {
+                #define ORDER_CASE(UCASE, lcase) \
+                case ORDER_##UCASE: \
+                        if (a->lcase != b->lcase) \
+                                return a->lcase - b->lcase; \
+                        break;
 
-        if (a->n_owner_changed > b->n_owner_changed)
-                return -1;
-        else if (a->n_owner_changed < b->n_owner_changed)
-                return 1;
+                ORDER_CASE(ID, id)
+                ORDER_CASE(N_LOCKED, n_locked)
+                ORDER_CASE(N_OWNER_CHANGED, n_owner_changed)
+                ORDER_CASE(N_CONTENDED, n_contended)
+                ORDER_CASE(NSEC_LOCKED_TOTAL, nsec_locked_total)
+                ORDER_CASE(NSEC_LOCKED_MAX, nsec_locked_max)
+                ORDER_CASE(NSEC_CONTENDED_TOTAL, nsec_contended_total)
+                ORDER_CASE(NSEC_READ_CONTENDED_TOTAL, nsec_read_contended_total)
+                case ORDER_NSEC_LOCKED_AVG: {
+                        double a_avg = a->nsec_locked_total / a->n_locked,
+                               b_avg = b->nsec_locked_total / b->n_locked;
 
-        if (a->n_locked > b->n_locked)
-                return -1;
-        else if (a->n_locked < b->n_locked)
-                return 1;
+                        if (!doubles_equal(a_avg, b_avg))
+                                return ((a_avg - b_avg) < 0.0) ? -1 : 1;
+                        break;
+                }
+                case ORDER_NSEC_CONTENDED_AVG: {
+                        double a_avg = a->nsec_contended_total / a->n_contended,
+                               b_avg = b->nsec_contended_total / b->n_contended;
 
-        if (a->nsec_locked_max > b->nsec_locked_max)
-                return -1;
-        else if (a->nsec_locked_max < b->nsec_locked_max)
-                return 1;
+                        if (!doubles_equal(a_avg, b_avg))
+                                return ((a_avg - b_avg) < 0.0) ? -1 : 1;
+                        break;
+                }
+                default:
+                        /* Should never be reached. */
+                        assert(0);
+
+                #undef ORDER_CASE
+        }
+
+        /* Fall back to a static ordering. */
+        #define STATIC_ORDER(lcase) \
+        if (a->lcase != b->lcase) \
+                return a->lcase - b->lcase
+
+        STATIC_ORDER(n_contended);
+        STATIC_ORDER(n_owner_changed);
+        STATIC_ORDER(n_locked);
+        STATIC_ORDER(nsec_locked_max);
+
+        #undef STATIC_ORDER
 
         /* Let's make the output deterministic */
-        if (a > b)
-                return -1;
-        else if (a < b)
-                return 1;
-
-        return 0;
+        return a - b;
 }
 
 static bool mutex_info_show(struct mutex_info *mi) {
@@ -559,6 +646,18 @@ static bool mutex_info_stat(struct mutex_info *mi) {
         return true;
 }
 
+static SummaryOrder summary_order_from_command(const char *command) {
+        unsigned int i;
+
+        for (i = 0; i < ORDER_INVALID; i++) {
+                if (strcmp(command, summary_order_details[i].command) == 0) {
+                        return ORDER_ID;
+                }
+        }
+
+        return ORDER_INVALID;
+}
+
 static void show_summary_internal(void) {
         struct mutex_info *mi, **table;
         unsigned n, u, i, m;
@@ -609,19 +708,19 @@ static void show_summary_internal(void) {
 
         qsort(table, n, sizeof(table[0]), mutex_info_compare);
 
-        for (i = 0, m = 0; i < n && (show_n_max <= 0 || m < show_n_max); i++)
-                m += mutex_info_dump(table[i]) ? 1 : 0;
+        for (i = n, m = 0; i > 0 && (show_n_max <= 0 || m < show_n_max); i--)
+                m += mutex_info_dump(table[i - 1]) ? 1 : 0;
 
         if (m > 0) {
                 fprintf(stderr,
                         "\n"
-                        "mutrace: Showing %u most contended mutexes:\n"
+                        "mutrace: Showing %u mutexes in order of %s:\n"
                         "\n"
                         " Mutex #   Locked  Changed    Cont. cont.Time[ms] tot.Time[ms] avg.Time[ms] Flags\n",
-                        m);
+                        m, summary_order_details[summary_order].ui_string);
 
-                for (i = 0, m = 0; i < n && (show_n_max <= 0 || m < show_n_max); i++)
-                        m += mutex_info_stat(table[i]) ? 1 : 0;
+                for (i = n, m = 0; i > 0 && (show_n_max <= 0 || m < show_n_max); i--)
+                        m += mutex_info_stat(table[i - 1]) ? 1 : 0;
 
 
                 if (i < n)

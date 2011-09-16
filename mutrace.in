@@ -17,7 +17,7 @@
 # You should have received a copy of the GNU Lesser General Public
 # License along with mutrace. If not, see <http://www.gnu.org/licenses/>.
 
-if ! TEMP=`getopt -o +ardh --long hash-size:,frames:,locked-min:,owner-changed-min:,contended-min:,max:,trap,help,all,debug-info -n mutrace -- "$@"` ; then
+if ! TEMP=`getopt -o +ardh --long hash-size:,frames:,locked-min:,owner-changed-min:,contended-min:,max:,order:,trap,help,all,debug-info -n mutrace -- "$@"` ; then
     exit 1
 fi
 
@@ -54,6 +54,11 @@ while : ; do
 
                 --max)
                         export MUTRACE_MAX="$2"
+                        shift 2
+                        ;;
+
+                --order)
+                        export MUTRACE_SUMMARY_ORDER="$2"
                         shift 2
                         ;;
 
@@ -94,6 +99,8 @@ OPTIONS:
       --frames=INTEGER            Set number of frames to show in stack traces
   -d, --debug-info                Make use of debug information in stack traces
       --max=INTEGER               Show this many mutexes at maximum
+      --order=STRING              Order the summary table by this column (see
+                                  below for valid column names)
 
       --locked-min=INTEGER        Only show mutexes that have been locked at
                                   least this often
@@ -109,6 +116,21 @@ OPTIONS:
       --trap                      Trigger a debugger trap each time a mutex
                                   inconsistency is detected (for use in
                                   conjunction with gdb)
+
+ORDER COLUMN NAMES:
+  id                              Mutex number
+  n-locked                        Total number of times mutex was locked
+  n-owner-changed                 Total number of times mutex ownership changed
+  n-contended                     Total number of times mutex was contested
+  nsec-locked-total               Total time mutex was locked for writing
+  nsec-locked-max                 Maximum time mutex was continuously locked for
+                                  writing
+  nsec-locked-avg                 Average time mutex was continuously locked for
+                                  writing
+  nsec-contended-total            Total time mutex was contended for writing
+  nsec-contended-avg              Average time mutex was continuously contended
+                                  for writing
+  nsec-read-contended-total       Total time mutex was contended for reading
 EOF
                         exit 0
                         ;;
