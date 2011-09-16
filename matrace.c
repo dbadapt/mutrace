@@ -192,7 +192,7 @@ static void setup(void) {
 
         initialized = true;
 
-        fprintf(stderr, "matrace: "PACKAGE_VERSION" sucessfully initialized for process %s (pid %lu).\n",
+        fprintf(stderr, "matrace: "PACKAGE_VERSION" successfully initialized for process %s (PID: %lu).\n",
                 get_prname(), (unsigned long) getpid());
 }
 
@@ -207,7 +207,7 @@ static void show_summary(void) {
 
         fprintf(stderr,
                 "\n"
-                "matrace: Total of %u allocations and %u frees in non-realtime threads in process %s (pid %lu).\n"
+                "matrace: Total of %u allocations and %u frees in non-realtime threads in process %s (PID: %lu).\n"
                 "matrace: Total of %u allocations and %u frees in realtime threads.\n",
                 n_allocations_non_rt,
                 n_frees_non_rt,

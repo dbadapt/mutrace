@@ -354,7 +354,7 @@ static void setup(void) {
 
         initialized = true;
 
-        fprintf(stderr, "mutrace: "PACKAGE_VERSION" sucessfully initialized for process %s (pid %lu).\n",
+        fprintf(stderr, "mutrace: "PACKAGE_VERSION" successfully initialized for process %s (PID: %lu).\n",
                 get_prname(), (unsigned long) getpid());
 }
 
@@ -560,7 +560,7 @@ static void show_summary(void) {
 
         fprintf(stderr,
                 "\n"
-                "mutrace: Showing statistics for process %s (pid %lu).\n", get_prname(), (unsigned long) getpid());
+                "mutrace: Showing statistics for process %s (PID: %lu).\n", get_prname(), (unsigned long) getpid());
 
         n = 0;
         for (u = 0; u < hash_size; u++) {
@@ -627,7 +627,7 @@ static void show_summary(void) {
                         "          Object:                                     M = Mutex, W = RWLock /||||\n"
                         "           State:                                 x = dead, ! = inconsistent /|||\n"
                         "             Use:                                 R = used in realtime thread /||\n"
-                        "      Mutex Type:                 r = RECURSIVE, e = ERRRORCHECK, a = ADAPTIVE /|\n"
+                        "      Mutex Type:                  r = RECURSIVE, e = ERRORCHECK, a = ADAPTIVE /|\n"
                         "  Mutex Protocol:                                      i = INHERIT, p = PROTECT /\n"
                         "     RWLock Kind: r = PREFER_READER, w = PREFER_WRITER, W = PREFER_WRITER_NONREC \n");
 
