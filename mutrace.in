@@ -17,7 +17,7 @@
 # You should have received a copy of the GNU Lesser General Public
 # License along with mutrace. If not, see <http://www.gnu.org/licenses/>.
 
-if ! TEMP=`getopt -o +ardh --long hash-size:,frames:,locked-min:,owner-changed-min:,contended-min:,max:,order:,trap,help,all,debug-info -n mutrace -- "$@"` ; then
+if ! TEMP=`getopt -o +ardh --long hash-size:,frames:,locked-min:,owner-changed-min:,contended-min:,max:,mutex-order:,cond-order:,trap,help,all,debug-info -n mutrace -- "$@"` ; then
     exit 1
 fi
 
@@ -57,8 +57,13 @@ while : ; do
                         shift 2
                         ;;
 
-                --order)
-                        export MUTRACE_SUMMARY_ORDER="$2"
+                --mutex-order)
+                        export MUTRACE_SUMMARY_MUTEX_ORDER="$2"
+                        shift 2
+                        ;;
+
+                --cond-order)
+                        export MUTRACE_SUMMARY_COND_ORDER="$2"
                         shift 2
                         ;;
 
@@ -99,9 +104,14 @@ OPTIONS:
       --frames=INTEGER            Set number of frames to show in stack traces
   -d, --debug-info                Make use of debug information in stack traces
       --max=INTEGER               Show this many mutexes at maximum
-      --order=STRING              Order the summary table by this column (see
-                                  below for valid column names)
+      --mutex-order=STRING        Order the summary table of mutexes by this
+                                  column (see below for valid column names)
+      --cond-order=STRING         Order the summary table of condition variables
+                                  by this column (see below for valid column
+                                  names)
 
+      --wait-min=INTEGER          Only show condition variables that have been
+                                  waited on at least this often
       --locked-min=INTEGER        Only show mutexes that have been locked at
                                   least this often
       --owner-changed-min=INTEGER Only show mutexes whose owning thread changed
@@ -117,7 +127,7 @@ OPTIONS:
                                   inconsistency is detected (for use in
                                   conjunction with gdb)
 
-ORDER COLUMN NAMES:
+MUTEX ORDER COLUMN NAMES:
   id                              Mutex number
   n-locked                        Total number of times mutex was locked for
                                   writing
@@ -144,6 +154,30 @@ ORDER COLUMN NAMES:
   nsec-read-contended-total       Total time mutex was contended for reading
   nsec-read-contended-avg         Average time mutex was continuously contended
                                   for reading
+
+CONDITION VARIABLE ORDER COLUMN NAMES:
+  id                              Condition variable number
+  n-wait                          Total number of times condition variable was
+                                  waited on (inc. timed waits)
+  n-signal                        Total number of times condition variable was
+                                  signalled
+  n-broadcast                     Total number of times condition variable was
+                                  broadcasted
+  n-wait-contended                Total number of times condition variable was
+                                  concurrently waited on by multiple threads
+  n-signal-contended              Total number of times condition variable was
+                                  signalled with no threads waiting
+  nsec-wait-total                 Total time condition variable was waited on
+  nsec-wait-max                   Maximum time condition variable was
+                                  continuously waited on
+  nsec-wait-avg                   Average time condition variable was
+                                  continuously waited on
+  nsec-wait-contended-total       Total time condition variable was waited on
+                                  by multiple threads before being signalled
+  nsec-wait-contended-max         Maximum time condition variable was waited on
+                                  by multiple threads
+  nsec-wait-contended-avg         Average time condition variable was waited on
+                                  by multiple threads
 EOF
                         exit 0
                         ;;

@@ -105,13 +105,49 @@ struct mutex_info {
         struct mutex_info *next;
 };
 
+struct cond_info {
+        pthread_cond_t *cond;
+
+        bool broken:1;
+        bool realtime:1;
+        bool dead:1;
+
+        unsigned n_wait_level;
+        pthread_mutex_t *mutex;
+
+        unsigned n_wait;
+        unsigned n_signal;
+        unsigned n_broadcast;
+
+        unsigned n_wait_contended; /* number of wait() calls made while another
+                                    * thread is already waiting on the cond */
+        unsigned n_signal_contended; /* number of signal() or broadcast() calls
+                                      * made while no thread is waiting */
+
+        uint64_t nsec_wait_total;
+        uint64_t nsec_wait_max;
+
+        uint64_t nsec_wait_contended_total;
+        uint64_t nsec_wait_contended_max;
+
+        uint64_t nsec_timestamp;
+        struct stacktrace_info stacktrace;
+
+        unsigned id;
+
+        struct cond_info *next;
+};
+
 static unsigned hash_size = 3371; /* probably a good idea to pick a prime here */
 static unsigned frames_max = 16;
 
-static volatile unsigned n_broken = 0;
+static volatile unsigned n_broken_mutexes = 0;
+static volatile unsigned n_broken_conds = 0;
+
 static volatile unsigned n_collisions = 0;
 static volatile unsigned n_self_contended = 0;
 
+static unsigned show_n_wait_min = 1;
 static unsigned show_n_locked_min = 1;
 static unsigned show_n_read_locked_min = 0;
 static unsigned show_n_contended_min = 0;
@@ -128,6 +164,10 @@ static int (*real_pthread_mutex_lock)(pthread_mutex_t *mutex) = NULL;
 static int (*real_pthread_mutex_trylock)(pthread_mutex_t *mutex) = NULL;
 static int (*real_pthread_mutex_timedlock)(pthread_mutex_t *mutex, const struct timespec *abstime) = NULL;
 static int (*real_pthread_mutex_unlock)(pthread_mutex_t *mutex) = NULL;
+static int (*real_pthread_cond_init)(pthread_cond_t *cond, const pthread_condattr_t *attr) = NULL;
+static int (*real_pthread_cond_destroy)(pthread_cond_t *cond) = NULL;
+static int (*real_pthread_cond_signal)(pthread_cond_t *cond) = NULL;
+static int (*real_pthread_cond_broadcast)(pthread_cond_t *cond) = NULL;
 static int (*real_pthread_cond_wait)(pthread_cond_t *cond, pthread_mutex_t *mutex) = NULL;
 static int (*real_pthread_cond_timedwait)(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *abstime) = NULL;
 static int (*real_pthread_create)(pthread_t *newthread, const pthread_attr_t *attr, void *(*start_routine) (void *), void *arg) = NULL;
@@ -150,6 +190,9 @@ static void (*real_backtrace_symbols_fd)(void *const *array, int size, int fd) =
 static struct mutex_info **alive_mutexes = NULL, **dead_mutexes = NULL;
 static pthread_mutex_t *mutexes_lock = NULL;
 
+static struct cond_info **alive_conds = NULL, **dead_conds = NULL;
+static pthread_mutex_t *conds_lock = NULL;
+
 static __thread bool recursive = false;
 
 static volatile bool initialized = false;
@@ -157,34 +200,34 @@ static volatile bool threads_existing = false;
 
 static uint64_t nsec_timestamp_setup;
 
-/* Must be kept in sync with summary_order_details. */
-typedef enum {
-        ORDER_ID = 0,
-        ORDER_N_LOCKED,
-        ORDER_N_READ_LOCKED,
-        ORDER_N_CONTENDED,
-        ORDER_N_READ_CONTENDED,
-        ORDER_N_OWNER_CHANGED,
-        ORDER_NSEC_LOCKED_TOTAL,
-        ORDER_NSEC_LOCKED_MAX,
-        ORDER_NSEC_LOCKED_AVG,
-        ORDER_NSEC_READ_LOCKED_TOTAL,
-        ORDER_NSEC_READ_LOCKED_MAX,
-        ORDER_NSEC_READ_LOCKED_AVG,
-        ORDER_NSEC_CONTENDED_TOTAL,
-        ORDER_NSEC_CONTENDED_AVG,
-        ORDER_NSEC_READ_CONTENDED_TOTAL,
-        ORDER_NSEC_READ_CONTENDED_AVG,
-} SummaryOrder;
-#define ORDER_INVALID ORDER_NSEC_READ_CONTENDED_AVG + 1 /* first invalid order */
-
 typedef struct {
         const char *command; /* as passed to --order command line argument */
         const char *ui_string; /* as displayed by show_summary() */
 } SummaryOrderDetails;
 
-/* Must be kept in sync with SummaryOrder. */
-static const SummaryOrderDetails summary_order_details[] = {
+/* Must be kept in sync with summary_mutex_order_details. */
+typedef enum {
+        MUTEX_ORDER_ID = 0,
+        MUTEX_ORDER_N_LOCKED,
+        MUTEX_ORDER_N_READ_LOCKED,
+        MUTEX_ORDER_N_CONTENDED,
+        MUTEX_ORDER_N_READ_CONTENDED,
+        MUTEX_ORDER_N_OWNER_CHANGED,
+        MUTEX_ORDER_NSEC_LOCKED_TOTAL,
+        MUTEX_ORDER_NSEC_LOCKED_MAX,
+        MUTEX_ORDER_NSEC_LOCKED_AVG,
+        MUTEX_ORDER_NSEC_READ_LOCKED_TOTAL,
+        MUTEX_ORDER_NSEC_READ_LOCKED_MAX,
+        MUTEX_ORDER_NSEC_READ_LOCKED_AVG,
+        MUTEX_ORDER_NSEC_CONTENDED_TOTAL,
+        MUTEX_ORDER_NSEC_CONTENDED_AVG,
+        MUTEX_ORDER_NSEC_READ_CONTENDED_TOTAL,
+        MUTEX_ORDER_NSEC_READ_CONTENDED_AVG,
+} SummaryMutexOrder;
+#define MUTEX_ORDER_INVALID MUTEX_ORDER_NSEC_READ_CONTENDED_AVG + 1 /* first invalid order */
+
+/* Must be kept in sync with SummaryMutexOrder. */
+static const SummaryOrderDetails summary_mutex_order_details[] = {
         { "id", "mutex number" },
         { "n-locked", "(write) lock count" },
         { "n-read-locked", "(read) lock count" },
@@ -203,9 +246,46 @@ static const SummaryOrderDetails summary_order_details[] = {
         { "nsec-read-contended-avg", "average time (read) contended" },
 };
 
-static SummaryOrder summary_order = ORDER_N_CONTENDED;
+static SummaryMutexOrder summary_mutex_order = MUTEX_ORDER_N_CONTENDED;
 
-static SummaryOrder summary_order_from_command(const char *command);
+static SummaryMutexOrder summary_mutex_order_from_command(const char *command);
+
+/* Must be kept in sync with summary_cond_order_details. */
+typedef enum {
+        COND_ORDER_ID = 0,
+        COND_ORDER_N_WAIT,
+        COND_ORDER_N_SIGNAL,
+        COND_ORDER_N_BROADCAST,
+        COND_ORDER_N_WAIT_CONTENDED,
+        COND_ORDER_N_SIGNAL_CONTENDED,
+        COND_ORDER_NSEC_WAIT_TOTAL,
+        COND_ORDER_NSEC_WAIT_MAX,
+        COND_ORDER_NSEC_WAIT_AVG,
+        COND_ORDER_NSEC_WAIT_CONTENDED_TOTAL,
+        COND_ORDER_NSEC_WAIT_CONTENDED_MAX,
+        COND_ORDER_NSEC_WAIT_CONTENDED_AVG,
+} SummaryCondOrder;
+#define COND_ORDER_INVALID COND_ORDER_NSEC_WAIT_CONTENDED_AVG + 1 /* first invalid order */
+
+/* Must be kept in sync with SummaryCondOrder. */
+static const SummaryOrderDetails summary_cond_order_details[] = {
+        { "id", "condition variable number" },
+        { "n-wait", "wait count" },
+        { "n-signal", "signal count" },
+        { "n-broadcast", "broadcast count" },
+        { "n-wait-contended", "wait contention count" },
+        { "n-signal-contended", "signal contention count" },
+        { "nsec-wait-total", "total wait time" },
+        { "nsec-wait-max", "maximum wait time" },
+        { "nsec-wait-avg", "average wait time" },
+        { "nsec-wait-contended-total", "total contended wait time" },
+        { "nsec-wait-contended-max", "maximum contended wait time" },
+        { "nsec-wait-contended-avg", "average contended wait time" },
+};
+
+static SummaryCondOrder summary_cond_order = COND_ORDER_N_WAIT_CONTENDED;
+
+static SummaryCondOrder summary_cond_order_from_command(const char *command);
 
 static void setup(void) __attribute ((constructor));
 static void shutdown(void) __attribute ((destructor));
@@ -321,6 +401,10 @@ static void load_functions(void) {
         /* There's some kind of weird incompatibility problem causing
          * pthread_cond_timedwait() to freeze if we don't ask for this
          * explicit version of these functions */
+        LOAD_FUNC_VERSIONED(pthread_cond_init, "GLIBC_2.3.2");
+        LOAD_FUNC_VERSIONED(pthread_cond_destroy, "GLIBC_2.3.2");
+        LOAD_FUNC_VERSIONED(pthread_cond_signal, "GLIBC_2.3.2");
+        LOAD_FUNC_VERSIONED(pthread_cond_broadcast, "GLIBC_2.3.2");
         LOAD_FUNC_VERSIONED(pthread_cond_wait, "GLIBC_2.3.2");
         LOAD_FUNC_VERSIONED(pthread_cond_timedwait, "GLIBC_2.3.2");
 
@@ -388,6 +472,12 @@ static void setup(void) {
         else
                 frames_max = t;
 
+        t = show_n_wait_min;
+        if (parse_env("MUTRACE_WAIT_MIN", &t) < 0)
+                fprintf(stderr, "mutrace: WARNING: Failed to parse $MUTRACE_WAIT_MIN.\n");
+        else
+                show_n_wait_min = t;
+
         t = show_n_locked_min;
         if (parse_env("MUTRACE_LOCKED_MIN", &t) < 0)
                 fprintf(stderr, "mutrace: WARNING: Failed to parse $MUTRACE_LOCKED_MIN.\n");
@@ -424,13 +514,22 @@ static void setup(void) {
         else
                 show_n_max = t;
 
-        s = getenv("MUTRACE_SUMMARY_ORDER");
+        s = getenv("MUTRACE_SUMMARY_MUTEX_ORDER");
         if (s != NULL) {
-                t = summary_order_from_command(s);
-                if (t == ORDER_INVALID)
-                        fprintf(stderr, "mutrace: WARNING: Failed to parse $MUTRACE_SUMMARY_ORDER.\n");
+                t = summary_mutex_order_from_command(s);
+                if (t == MUTEX_ORDER_INVALID)
+                        fprintf(stderr, "mutrace: WARNING: Failed to parse $MUTRACE_SUMMARY_MUTEX_ORDER.\n");
                 else
-                        summary_order = t;
+                        summary_mutex_order = t;
+        }
+
+        s = getenv("MUTRACE_SUMMARY_COND_ORDER");
+        if (s != NULL) {
+                t = summary_cond_order_from_command(s);
+                if (t == COND_ORDER_INVALID)
+                        fprintf(stderr, "mutrace: WARNING: Failed to parse $MUTRACE_SUMMARY_COND_ORDER.\n");
+                else
+                        summary_cond_order = t;
         }
 
         if (getenv("MUTRACE_TRAP"))
@@ -439,6 +538,7 @@ static void setup(void) {
         if (getenv("MUTRACE_TRACK_RT"))
                 track_rt = true;
 
+        /* Set up the mutex hash table. */
         alive_mutexes = calloc(hash_size, sizeof(struct mutex_info*));
         assert(alive_mutexes);
 
@@ -449,6 +549,22 @@ static void setup(void) {
         assert(mutexes_lock);
 
         for (m = mutexes_lock, last = mutexes_lock+hash_size; m < last; m++) {
+                r = real_pthread_mutex_init(m, NULL);
+
+                assert(r == 0);
+        }
+
+        /* Set up the cond hash table. */
+        alive_conds = calloc(hash_size, sizeof(struct cond_info*));
+        assert(alive_conds);
+
+        dead_conds = calloc(hash_size, sizeof(struct cond_info*));
+        assert(dead_conds);
+
+        conds_lock = malloc(hash_size * sizeof(pthread_mutex_t));
+        assert(conds_lock);
+
+        for (m = conds_lock, last = conds_lock+hash_size; m < last; m++) {
                 r = real_pthread_mutex_init(m, NULL);
 
                 assert(r == 0);
@@ -486,25 +602,57 @@ static unsigned long rwlock_hash(pthread_rwlock_t *rwlock) {
         return u % hash_size;
 }
 
-static void lock_hash_mutex(unsigned u) {
+static unsigned long cond_hash(pthread_cond_t *cond) {
+        unsigned long u;
+
+        u = (unsigned long) cond;
+        u /= sizeof(void*);
+
+        return u % hash_size;
+}
+
+static void lock_hash(pthread_mutex_t *lock_array, unsigned u) {
         int r;
 
-        r = real_pthread_mutex_trylock(mutexes_lock + u);
+        r = real_pthread_mutex_trylock(lock_array + u);
 
         if (UNLIKELY(r == EBUSY)) {
                 __sync_fetch_and_add(&n_self_contended, 1);
-                r = real_pthread_mutex_lock(mutexes_lock + u);
+                r = real_pthread_mutex_lock(lock_array + u);
         }
 
         assert(r == 0);
 }
 
-static void unlock_hash_mutex(unsigned u) {
+static void unlock_hash(pthread_mutex_t *lock_array, unsigned u) {
         int r;
 
-        r = real_pthread_mutex_unlock(mutexes_lock + u);
+        r = real_pthread_mutex_unlock(lock_array + u);
         assert(r == 0);
 }
+
+#define lock_hash_mutex(u) lock_hash(mutexes_lock, u)
+#define unlock_hash_mutex(u) unlock_hash(mutexes_lock, u)
+
+#define lock_hash_cond(u) lock_hash(conds_lock, u)
+#define unlock_hash_cond(u) unlock_hash(conds_lock, u)
+
+#define _ORDER_CASE(TYPE, UCASE, lcase) \
+case TYPE##_ORDER_##UCASE: \
+        if (a->lcase != b->lcase) \
+                return a->lcase - b->lcase; \
+        break;
+#define _ORDER_CASE_AVG(TYPE, UCASE, lcase, divisor) \
+case TYPE##_ORDER_##UCASE: { \
+        double a_avg = a->lcase / a->divisor, \
+               b_avg = b->lcase / b->divisor; \
+        if (!doubles_equal(a_avg, b_avg)) \
+                return ((a_avg - b_avg) < 0.0) ? -1 : 1; \
+        break; \
+}
+#define STATIC_ORDER(lcase) \
+if (a->lcase != b->lcase) \
+        return a->lcase - b->lcase
 
 static int mutex_info_compare(const void *_a, const void *_b) {
         const struct mutex_info
@@ -513,20 +661,9 @@ static int mutex_info_compare(const void *_a, const void *_b) {
 
         /* Order by the user's chosen ordering first, then fall back to a static
          * ordering. */
-        switch (summary_order) {
-                #define ORDER_CASE(UCASE, lcase) \
-                case ORDER_##UCASE: \
-                        if (a->lcase != b->lcase) \
-                                return a->lcase - b->lcase; \
-                        break;
-                #define ORDER_CASE_AVG(UCASE, lcase, divisor) \
-                case ORDER_##UCASE: { \
-                        double a_avg = a->lcase / a->divisor, \
-                               b_avg = b->lcase / b->divisor; \
-                        if (!doubles_equal(a_avg, b_avg)) \
-                                return ((a_avg - b_avg) < 0.0) ? -1 : 1; \
-                        break; \
-                }
+        switch (summary_mutex_order) {
+                #define ORDER_CASE(UCASE, lcase) _ORDER_CASE(MUTEX, UCASE, lcase)
+                #define ORDER_CASE_AVG(UCASE, lcase, divisor) _ORDER_CASE_AVG(MUTEX, UCASE, lcase, divisor)
 
                 ORDER_CASE(ID, id)
                 ORDER_CASE(N_LOCKED, n_locked[WRITE])
@@ -553,20 +690,59 @@ static int mutex_info_compare(const void *_a, const void *_b) {
         }
 
         /* Fall back to a static ordering. */
-        #define STATIC_ORDER(lcase) \
-        if (a->lcase != b->lcase) \
-                return a->lcase - b->lcase
-
         STATIC_ORDER(n_contended[WRITE]);
         STATIC_ORDER(n_owner_changed);
         STATIC_ORDER(n_locked[WRITE]);
         STATIC_ORDER(nsec_locked_max[WRITE]);
 
-        #undef STATIC_ORDER
+        /* Let's make the output deterministic */
+        return a - b;
+}
+
+static int cond_info_compare(const void *_a, const void *_b) {
+        const struct cond_info
+                *a = *(const struct cond_info**) _a,
+                *b = *(const struct cond_info**) _b;
+
+        /* Order by the user's chosen ordering first, then fall back to a static
+         * ordering. */
+        switch (summary_cond_order) {
+                #define ORDER_CASE(UCASE, lcase) _ORDER_CASE(COND, UCASE, lcase)
+                #define ORDER_CASE_AVG(UCASE, lcase, divisor) _ORDER_CASE_AVG(COND, UCASE, lcase, divisor)
+
+                ORDER_CASE(ID, id)
+                ORDER_CASE(N_WAIT, n_wait)
+                ORDER_CASE(N_SIGNAL, n_signal)
+                ORDER_CASE(N_BROADCAST, n_broadcast)
+                ORDER_CASE(N_WAIT_CONTENDED, n_wait_contended)
+                ORDER_CASE(N_SIGNAL_CONTENDED, n_signal_contended)
+                ORDER_CASE(NSEC_WAIT_TOTAL, nsec_wait_total)
+                ORDER_CASE(NSEC_WAIT_MAX, nsec_wait_max)
+                ORDER_CASE_AVG(NSEC_WAIT_AVG, nsec_wait_total, n_wait)
+                ORDER_CASE(NSEC_WAIT_CONTENDED_TOTAL, nsec_wait_contended_total)
+                ORDER_CASE(NSEC_WAIT_CONTENDED_MAX, nsec_wait_contended_max)
+                ORDER_CASE_AVG(NSEC_WAIT_CONTENDED_AVG, nsec_wait_contended_total, n_wait_contended)
+                default:
+                        /* Should never be reached. */
+                        assert(0);
+
+                #undef ORDER_CASE_AVG
+                #undef ORDER_CASE
+        }
+
+        /* Fall back to a static ordering. */
+        STATIC_ORDER(n_wait_contended);
+        STATIC_ORDER(n_wait);
+        STATIC_ORDER(nsec_wait_total);
+        STATIC_ORDER(n_signal);
 
         /* Let's make the output deterministic */
         return a - b;
 }
+
+#undef STATIC_ORDER
+#undef ORDER_CASE_AVG
+#undef ORDER_CASE
 
 static bool mutex_info_show(struct mutex_info *mi) {
 
@@ -592,6 +768,17 @@ static bool mutex_info_show(struct mutex_info *mi) {
         return true;
 }
 
+static bool cond_info_show(struct cond_info *ci) {
+        /* Condition variables used by real-time code are always noteworthy */
+        if (ci->realtime)
+                return true;
+
+        if (ci->n_wait < show_n_wait_min)
+                return false;
+
+        return true;
+}
+
 static bool mutex_info_dump(struct mutex_info *mi) {
         char *stacktrace_str;
 
@@ -603,6 +790,23 @@ static bool mutex_info_dump(struct mutex_info *mi) {
         fprintf(stderr,
                 "\nMutex #%u (0x%p) first referenced by:\n"
                 "%s", mi->id, mi->mutex ? (void*) mi->mutex : (void*) mi->rwlock, stacktrace_str);
+
+        free(stacktrace_str);
+
+        return true;
+}
+
+static bool cond_info_dump(struct cond_info *ci) {
+        char *stacktrace_str;
+
+        if (!cond_info_show(ci))
+                return false;
+
+        stacktrace_str = stacktrace_to_string(ci->stacktrace);
+
+        fprintf(stderr,
+                "\nCondvar #%u (0x%p) first referenced by:\n"
+                "%s", ci->id, ci->cond, stacktrace_str);
 
         free(stacktrace_str);
 
@@ -699,20 +903,52 @@ static bool mutex_info_stat(struct mutex_info *mi) {
         return true;
 }
 
-static SummaryOrder summary_order_from_command(const char *command) {
+static bool cond_info_stat(struct cond_info *ci) {
+        if (!cond_info_show(ci))
+                return false;
+
+        fprintf(stderr,
+                "%8u %8u %8u %8u %12.3f %13.3f %12.3f     %c%c\n",
+                ci->id,
+                ci->n_wait,
+                ci->n_signal + ci->n_broadcast,
+                ci->n_wait_contended,
+                (double) ci->nsec_wait_total / 1000000.0,
+                (double) ci->nsec_wait_contended_total / 1000000.0,
+                (double) ci->nsec_wait_contended_total / ci->n_wait / 1000000.0,
+                ci->broken ? '!' : (ci->dead ? 'x' : '-'),
+                track_rt ? (ci->realtime ? 'R' : '-') : '.');
+
+        return true;
+}
+
+static SummaryMutexOrder summary_mutex_order_from_command(const char *command) {
         unsigned int i;
 
-        for (i = 0; i < ORDER_INVALID; i++) {
-                if (strcmp(command, summary_order_details[i].command) == 0) {
-                        return ORDER_ID;
+        for (i = 0; i < MUTEX_ORDER_INVALID; i++) {
+                if (strcmp(command, summary_mutex_order_details[i].command) == 0) {
+                        return i;
                 }
         }
 
-        return ORDER_INVALID;
+        return MUTEX_ORDER_INVALID;
+}
+
+static SummaryCondOrder summary_cond_order_from_command(const char *command) {
+        unsigned int i;
+
+        for (i = 0; i < COND_ORDER_INVALID; i++) {
+                if (strcmp(command, summary_cond_order_details[i].command) == 0) {
+                        return i;
+                }
+        }
+
+        return COND_ORDER_INVALID;
 }
 
 static void show_summary_internal(void) {
-        struct mutex_info *mi, **table;
+        struct mutex_info *mi, **mutex_table;
+        struct cond_info *ci, **cond_table;
         unsigned n, u, i, m;
         uint64_t t;
         long n_cpus;
@@ -723,6 +959,7 @@ static void show_summary_internal(void) {
                 "\n"
                 "mutrace: Showing statistics for process %s (PID: %lu).\n", get_prname(), (unsigned long) getpid());
 
+        /* Mutexes. */
         n = 0;
         for (u = 0; u < hash_size; u++) {
                 lock_hash_mutex(u);
@@ -743,26 +980,26 @@ static void show_summary_internal(void) {
         fprintf(stderr,
                 "mutrace: %u mutexes used.\n", n);
 
-        table = malloc(sizeof(struct mutex_info*) * n);
+        mutex_table = malloc(sizeof(struct mutex_info*) * n);
 
         i = 0;
         for (u = 0; u < hash_size; u++) {
                 for (mi = alive_mutexes[u]; mi; mi = mi->next) {
                         mi->id = i;
-                        table[i++] = mi;
+                        mutex_table[i++] = mi;
                 }
 
                 for (mi = dead_mutexes[u]; mi; mi = mi->next) {
                         mi->id = i;
-                        table[i++] = mi;
+                        mutex_table[i++] = mi;
                 }
         }
         assert(i == n);
 
-        qsort(table, n, sizeof(table[0]), mutex_info_compare);
+        qsort(mutex_table, n, sizeof(mutex_table[0]), mutex_info_compare);
 
         for (i = n, m = 0; i > 0 && (show_n_max <= 0 || m < show_n_max); i--)
-                m += mutex_info_dump(table[i - 1]) ? 1 : 0;
+                m += mutex_info_dump(mutex_table[i - 1]) ? 1 : 0;
 
         if (m > 0) {
                 fprintf(stderr,
@@ -770,10 +1007,10 @@ static void show_summary_internal(void) {
                         "mutrace: Showing %u mutexes in order of %s:\n"
                         "\n"
                         " Mutex #   Locked  Changed    Cont. cont.Time[ms] tot.Time[ms] avg.Time[ms] Flags\n",
-                        m, summary_order_details[summary_order].ui_string);
+                        m, summary_mutex_order_details[summary_mutex_order].ui_string);
 
                 for (i = n, m = 0; i > 0 && (show_n_max <= 0 || m < show_n_max); i--)
-                        m += mutex_info_stat(table[i - 1]) ? 1 : 0;
+                        m += mutex_info_stat(mutex_table[i - 1]) ? 1 : 0;
 
 
                 if (i < n)
@@ -797,18 +1034,100 @@ static void show_summary_internal(void) {
                 if (!track_rt)
                         fprintf(stderr,
                                 "\n"
+                                "mutrace: Note that the flags column R is only valid in --track-rt mode!\n\n");
+
+        } else
+                fprintf(stderr,
+                        "\n"
+                        "mutrace: No mutex contended according to filtering parameters.\n\n");
+
+        free(mutex_table);
+
+        for (u = 0; u < hash_size; u++)
+                unlock_hash_mutex(u);
+
+        /* Condition variables. */
+        n = 0;
+        for (u = 0; u < hash_size; u++) {
+                lock_hash_cond(u);
+
+                for (ci = alive_conds[u]; ci; ci = ci->next)
+                        n++;
+
+                for (ci = dead_conds[u]; ci; ci = ci->next)
+                        n++;
+        }
+
+        if (n <= 0) {
+                fprintf(stderr,
+                        "mutrace: No condition variables used.\n");
+                return;
+        }
+
+        fprintf(stderr,
+                "mutrace: %u condition variables used.\n", n);
+
+        cond_table = malloc(sizeof(struct cond_info*) * n);
+
+        i = 0;
+        for (u = 0; u < hash_size; u++) {
+                for (ci = alive_conds[u]; ci; ci = ci->next) {
+                        ci->id = i;
+                        cond_table[i++] = ci;
+                }
+
+                for (ci = dead_conds[u]; ci; ci = ci->next) {
+                        ci->id = i;
+                        cond_table[i++] = ci;
+                }
+        }
+        assert(i == n);
+
+        qsort(cond_table, n, sizeof(cond_table[0]), cond_info_compare);
+
+        for (i = n, m = 0; i > 0 && (show_n_max <= 0 || m < show_n_max); i--)
+                m += cond_info_dump(cond_table[i - 1]) ? 1 : 0;
+
+        if (m > 0) {
+                fprintf(stderr,
+                        "\n"
+                        "mutrace: Showing %u condition variables in order of %s:\n"
+                        "\n"
+                        "  Cond #    Waits  Signals    Cont. tot.Time[ms] cont.Time[ms] avg.Time[ms] Flags\n",
+                        m, summary_cond_order_details[summary_cond_order].ui_string);
+
+                for (i = n, m = 0; i > 0 && (show_n_max <= 0 || m < show_n_max); i--)
+                        m += cond_info_stat(cond_table[i - 1]) ? 1 : 0;
+
+
+                if (i < n)
+                        fprintf(stderr,
+                                "     ...      ...      ...      ...          ...           ...          ...     ||\n");
+                else
+                        fprintf(stderr,
+                                "                                                                                ||\n");
+
+                fprintf(stderr,
+                        "                                                                                /|\n"
+                        "           State:                                     x = dead, ! = inconsistent /\n"
+                        "             Use:                                     R = used in realtime thread \n");
+
+                if (!track_rt)
+                        fprintf(stderr,
+                                "\n"
                                 "mutrace: Note that the flags column R is only valid in --track-rt mode!\n");
 
         } else
                 fprintf(stderr,
                         "\n"
-                        "mutrace: No mutex contended according to filtering parameters.\n");
+                        "mutrace: No condition variable contended according to filtering parameters.\n");
 
-        free(table);
+        free(cond_table);
 
         for (u = 0; u < hash_size; u++)
-                unlock_hash_mutex(u);
+                unlock_hash_cond(u);
 
+        /* Footer. */
         fprintf(stderr,
                 "\n"
                 "mutrace: Total runtime is %0.3f ms.\n", (double) t / 1000000.0);
@@ -826,11 +1145,17 @@ static void show_summary_internal(void) {
                         "\n"
                         "mutrace: Results for SMP with %li processors.\n", n_cpus);
 
-        if (n_broken > 0)
+        if (n_broken_mutexes > 0)
                 fprintf(stderr,
                         "\n"
                         "mutrace: WARNING: %u inconsistent mutex uses detected. Results might not be reliable.\n"
-                        "mutrace:          Fix your program first!\n", n_broken);
+                        "mutrace:          Fix your program first!\n", n_broken_mutexes);
+
+        if (n_broken_conds > 0)
+                fprintf(stderr,
+                        "\n"
+                        "mutrace: WARNING: %u inconsistent condition variable uses detected. Results might not be reliable.\n"
+                        "mutrace:          Fix your program first!\n", n_broken_conds);
 
         if (n_collisions > 0)
                 fprintf(stderr,
@@ -1161,7 +1486,7 @@ static void mutex_lock(pthread_mutex_t *mutex, bool busy, uint64_t nsec_contende
         mi = mutex_info_acquire(mutex);
 
         if (mi->n_lock_level > 0 && mi->type != PTHREAD_MUTEX_RECURSIVE) {
-                __sync_fetch_and_add(&n_broken, 1);
+                __sync_fetch_and_add(&n_broken_mutexes, 1);
                 mi->broken = true;
 
                 if (raise_trap)
@@ -1293,7 +1618,7 @@ static void mutex_unlock(pthread_mutex_t *mutex) {
         mi = mutex_info_acquire(mutex);
 
         if (mi->n_lock_level <= 0) {
-                __sync_fetch_and_add(&n_broken, 1);
+                __sync_fetch_and_add(&n_broken_mutexes, 1);
                 mi->broken = true;
 
                 if (raise_trap)
@@ -1326,33 +1651,306 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex) {
         return real_pthread_mutex_unlock(mutex);
 }
 
+static struct cond_info *cond_info_add(unsigned long u, pthread_cond_t *cond) {
+        struct cond_info *ci;
+
+        /* Needs external locking */
+
+        if (alive_conds[u])
+                __sync_fetch_and_add(&n_collisions, 1);
+
+        ci = calloc(1, sizeof(struct cond_info));
+        assert(ci);
+
+        ci->cond = cond;
+        ci->stacktrace = generate_stacktrace();
+
+        ci->next = alive_conds[u];
+        alive_conds[u] = ci;
+
+        return ci;
+}
+
+static void cond_info_remove(unsigned u, pthread_cond_t *cond) {
+        struct cond_info *ci, *p;
+
+        /* Needs external locking */
+
+        for (ci = alive_conds[u], p = NULL; ci; p = ci, ci = ci->next)
+                if (ci->cond == cond)
+                        break;
+
+        if (!ci)
+                return;
+
+        if (p)
+                p->next = ci->next;
+        else
+                alive_conds[u] = ci->next;
+
+        ci->dead = true;
+        ci->next = dead_conds[u];
+        dead_conds[u] = ci;
+}
+
+static struct cond_info *cond_info_acquire(pthread_cond_t *cond) {
+        unsigned long u;
+        struct cond_info *ci;
+
+        u = cond_hash(cond);
+        lock_hash_cond(u);
+
+        for (ci = alive_conds[u]; ci; ci = ci->next)
+                if (ci->cond == cond)
+                        return ci;
+
+        return cond_info_add(u, cond);
+}
+
+static void cond_info_release(pthread_cond_t *cond) {
+        unsigned long u;
+
+        u = cond_hash(cond);
+        unlock_hash_cond(u);
+}
+
+int pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr) {
+        int r;
+
+        if (UNLIKELY(!initialized && recursive)) {
+                static const pthread_cond_t template = PTHREAD_COND_INITIALIZER;
+                /* Now this is incredibly ugly. */
+
+                memcpy(cond, &template, sizeof(pthread_cond_t));
+                return 0;
+        }
+
+        load_functions();
+
+        r = real_pthread_cond_init(cond, attr);
+        if (r != 0)
+                return r;
+
+        if (LIKELY(initialized && !recursive)) {
+                unsigned long u;
+
+                recursive = true;
+                u = cond_hash(cond);
+                lock_hash_cond(u);
+
+                cond_info_remove(u, cond);
+                cond_info_add(u, cond);
+
+                unlock_hash_cond(u);
+                recursive = false;
+        }
+
+        return r;
+}
+
+int pthread_cond_destroy(pthread_cond_t *cond) {
+        assert(initialized || !recursive);
+
+        load_functions();
+
+        if (LIKELY(initialized && !recursive)) {
+                unsigned long u;
+
+                recursive = true;
+                u = cond_hash(cond);
+                lock_hash_cond(u);
+
+                cond_info_remove(u, cond);
+
+                unlock_hash_cond(u);
+                recursive = false;
+        }
+
+        return real_pthread_cond_destroy(cond);
+}
+
+static void cond_signal(pthread_cond_t *cond, bool is_broadcast) {
+        struct cond_info *ci;
+
+        if (UNLIKELY(!initialized || recursive))
+                return;
+
+        recursive = true;
+        ci = cond_info_acquire(cond);
+
+        if (ci->n_wait_level == 0) {
+                ci->n_signal_contended++;
+        } else {
+                /* If we're signalling the second-last thread which is waiting
+                 * on the cond, calculate the total contention time (from the
+                 * time the second thread first started waiting on the cond) and
+                 * add it to the total.
+                 *
+                 * However, if we're broadcasting, don't sum up the contention
+                 * time, since we assume that the threads will all now have
+                 * useful work to do. */
+                if (ci->n_wait_level == 2 && !is_broadcast) {
+                        uint64_t contention_time = nsec_now() - ci->nsec_timestamp;
+                        ci->nsec_wait_contended_total += contention_time;
+
+                        if (contention_time > ci->nsec_wait_contended_max)
+                                ci->nsec_wait_contended_max = contention_time;
+                }
+        }
+
+        if (is_broadcast)
+                ci->n_broadcast++;
+        else
+                ci->n_signal++;
+
+        if (track_rt && !ci->realtime && is_realtime())
+                ci->realtime = true;
+
+        cond_info_release(cond);
+        recursive = false;
+}
+
+int pthread_cond_signal(pthread_cond_t *cond) {
+        int r;
+
+        if (UNLIKELY(!initialized && recursive)) {
+                assert(!threads_existing);
+                return 0;
+        }
+
+        load_functions();
+
+        r = real_pthread_cond_signal(cond);
+        if (UNLIKELY(r != 0))
+                return r;
+
+        cond_signal(cond, false);
+
+        return r;
+}
+
+int pthread_cond_broadcast(pthread_cond_t *cond) {
+        int r;
+
+        if (UNLIKELY(!initialized && recursive)) {
+                assert(!threads_existing);
+                return 0;
+        }
+
+        load_functions();
+
+        r = real_pthread_cond_broadcast(cond);
+        if (UNLIKELY(r != 0))
+                return r;
+
+        cond_signal(cond, true);
+
+        return r;
+}
+
+static void cond_wait_start(pthread_cond_t *cond, pthread_mutex_t *mutex) {
+        struct cond_info *ci;
+
+        if (UNLIKELY(!initialized || recursive))
+                return;
+
+        recursive = true;
+        ci = cond_info_acquire(cond);
+
+        /* Check the cond is always used with the same mutex. pthreads
+         * technically allows for different mutexes to be used sequentially
+         * with a given cond, but this seems error prone and probably always
+         * A Bad Idea. */
+        if (ci->mutex == NULL) {
+                ci->mutex = mutex;
+        } else if (ci->mutex != mutex) {
+                __sync_fetch_and_add(&n_broken_conds, 1);
+                ci->broken = true;
+
+                if (raise_trap)
+                        DEBUG_TRAP;
+        }
+
+        if (ci->n_wait_level > 0)
+                ci->n_wait_contended++;
+
+        /* Iff we're the second thread to concurrently wait on this cond, start
+         * the contention timer. This timer will continue running until the
+         * second-last thread to be waiting on the cond is signalled. */
+        if (ci->n_wait_level == 1)
+                ci->nsec_timestamp = nsec_now();
+
+        ci->n_wait_level++;
+        ci->n_wait++;
+
+        if (track_rt && !ci->realtime && is_realtime())
+                ci->realtime = true;
+
+        cond_info_release(cond);
+        recursive = false;
+}
+
+static void cond_wait_finish(pthread_cond_t *cond, pthread_mutex_t *mutex, uint64_t wait_time) {
+        struct cond_info *ci;
+
+        if (UNLIKELY(!initialized || recursive))
+                return;
+
+        recursive = true;
+        ci = cond_info_acquire(cond);
+
+        ci->nsec_wait_total += wait_time;
+        if (wait_time > ci->nsec_wait_max)
+                ci->nsec_wait_max = wait_time;
+
+        ci->n_wait_level--;
+
+        cond_info_release(cond);
+        recursive = false;
+}
+
 int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex) {
         int r;
+        uint64_t start_time, wait_time = 0;
 
         assert(initialized || !recursive);
 
         load_functions();
 
+        cond_wait_start(cond, mutex);
         mutex_unlock(mutex);
+
+        start_time = nsec_now();
         r = real_pthread_cond_wait(cond, mutex);
+        wait_time = nsec_now() - start_time;
 
         /* Unfortunately we cannot distuingish mutex contention and
          * the condition not being signalled here. */
         mutex_lock(mutex, false, 0);
+        cond_wait_finish(cond, mutex, wait_time);
 
         return r;
 }
 
 int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *abstime) {
         int r;
+        uint64_t start_time, wait_time = 0;
 
         assert(initialized || !recursive);
 
         load_functions();
 
+        cond_wait_start(cond, mutex);
         mutex_unlock(mutex);
+
+        start_time = nsec_now();
         r = real_pthread_cond_timedwait(cond, mutex, abstime);
+        wait_time = nsec_now() - start_time;
+
+        /* Unfortunately we cannot distuingish mutex contention and
+         * the condition not being signalled here. */
         mutex_lock(mutex, false, 0);
+        cond_wait_finish(cond, mutex, wait_time);
 
         return r;
 }
@@ -1551,7 +2149,7 @@ static void rwlock_lock(pthread_rwlock_t *rwlock, LockType lock_type, bool busy,
         mi = rwlock_info_acquire(rwlock);
 
         if (mi->n_lock_level > 0 && lock_type == WRITE) {
-                __sync_fetch_and_add(&n_broken, 1);
+                __sync_fetch_and_add(&n_broken_mutexes, 1);
                 mi->broken = true;
 
                 if (raise_trap)
@@ -1770,7 +2368,7 @@ static void rwlock_unlock(pthread_rwlock_t *rwlock) {
         mi = rwlock_info_acquire(rwlock);
 
         if (mi->n_lock_level <= 0) {
-                __sync_fetch_and_add(&n_broken, 1);
+                __sync_fetch_and_add(&n_broken_mutexes, 1);
                 mi->broken = true;
 
                 if (raise_trap)
