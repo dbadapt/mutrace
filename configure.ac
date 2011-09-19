@@ -75,7 +75,9 @@ AC_CHECK_HEADERS([byteswap.h])
 AC_SEARCH_LIBS([bfd_init], [bfd], [], [AC_MSG_ERROR([*** libbfd not found])])
 AC_CHECK_HEADERS([bfd.h], [], [AC_MSG_ERROR([*** libbfd headers not found])])
 
-#### Typdefs, structures, etc. ####
+AC_HEADER_STDBOOL
+
+#### Typedefs, structures, etc. ####
 
 AC_C_CONST
 AC_C_BIGENDIAN
@@ -86,6 +88,11 @@ AC_CHECK_TYPES(ssize_t, , [AC_DEFINE([ssize_t], [signed long],
 AC_TYPE_OFF_T
 AC_TYPE_SIGNAL
 AC_TYPE_UID_T
+AC_TYPE_UINT64_T
+
+AC_FUNC_MALLOC
+AC_FUNC_REALLOC
+AC_CHECK_FUNCS([clock_gettime])
 
 #### Large File-Support (LFS) ####
 
