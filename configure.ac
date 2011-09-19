@@ -18,9 +18,9 @@
 # You should have received a copy of the GNU Lesser General Public
 # License along with mutrace. If not, see <http://www.gnu.org/licenses/>.
 
-AC_PREREQ(2.61)
+AC_PREREQ([2.61])
 
-AC_INIT([mutrace], 0.2, [mzzhgenpr (at) 0pointer (dot) net])
+AC_INIT([mutrace], [0.2], [mzzhgenpr (at) 0pointer (dot) net])
 AC_CONFIG_SRCDIR([mutrace.c])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_MACRO_DIR(m4)
@@ -86,7 +86,6 @@ AC_TYPE_SIZE_T
 AC_CHECK_TYPES(ssize_t, , [AC_DEFINE([ssize_t], [signed long],
     [Define ssize_t if it is not done by the standard libs.])])
 AC_TYPE_OFF_T
-AC_TYPE_SIGNAL
 AC_TYPE_UID_T
 AC_TYPE_UINT64_T
 
