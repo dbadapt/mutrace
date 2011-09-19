@@ -119,18 +119,31 @@ OPTIONS:
 
 ORDER COLUMN NAMES:
   id                              Mutex number
-  n-locked                        Total number of times mutex was locked
+  n-locked                        Total number of times mutex was locked for
+                                  writing
+  n-read-locked                   Total number of times mutex was locked for
+                                  reading
+  n-contended                     Total number of times mutex was contended for
+                                  writing
+  n-read-contended                Total number of times mutex was contended for
+                                  reading
   n-owner-changed                 Total number of times mutex ownership changed
-  n-contended                     Total number of times mutex was contested
   nsec-locked-total               Total time mutex was locked for writing
   nsec-locked-max                 Maximum time mutex was continuously locked for
                                   writing
   nsec-locked-avg                 Average time mutex was continuously locked for
                                   writing
+  nsec-read-locked-total          Total time mutex was locked for reading
+  nsec-read-locked-max            Maximum time mutex was continuously locked for
+                                  reading
+  nsec-read-locked-avg            Average time mutex was continuously locked for
+                                  reading
   nsec-contended-total            Total time mutex was contended for writing
   nsec-contended-avg              Average time mutex was continuously contended
                                   for writing
   nsec-read-contended-total       Total time mutex was contended for reading
+  nsec-read-contended-avg         Average time mutex was continuously contended
+                                  for reading
 EOF
                         exit 0
                         ;;

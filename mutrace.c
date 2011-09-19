@@ -65,6 +65,14 @@ struct stacktrace_info {
         int nb_frame;
 };
 
+/* Used to differentiate between statistics for read-only and read-write locks
+ * held on rwlocks. */
+typedef enum {
+        WRITE = 0,
+        READ = 1,
+} LockType;
+#define NUM_LOCK_TYPES READ + 1
+
 struct mutex_info {
         pthread_mutex_t *mutex;
         pthread_rwlock_t *rwlock;
@@ -75,21 +83,21 @@ struct mutex_info {
         bool dead:1;
 
         unsigned n_lock_level;
+        LockType lock_type; /* rwlocks only */
 
         pid_t last_owner;
 
-        unsigned n_locked;
+        unsigned n_locked[NUM_LOCK_TYPES];
+        unsigned n_contended[NUM_LOCK_TYPES];
+
         unsigned n_owner_changed;
-        unsigned n_contended;
 
-        uint64_t nsec_locked_total;
-        uint64_t nsec_locked_max;
+        uint64_t nsec_locked_total[NUM_LOCK_TYPES];
+        uint64_t nsec_locked_max[NUM_LOCK_TYPES];
 
-        uint64_t nsec_contended_total; /* mutexes only */
-        uint64_t nsec_read_contended_total; /* rwlocks only */
-        uint64_t nsec_write_contended_total; /* rwlocks only */
+        uint64_t nsec_contended_total[NUM_LOCK_TYPES];
 
-        uint64_t nsec_timestamp;
+        uint64_t nsec_timestamp[NUM_LOCK_TYPES];
         struct stacktrace_info stacktrace;
 
         unsigned id;
@@ -105,8 +113,10 @@ static volatile unsigned n_collisions = 0;
 static volatile unsigned n_self_contended = 0;
 
 static unsigned show_n_locked_min = 1;
-static unsigned show_n_owner_changed_min = 2;
+static unsigned show_n_read_locked_min = 0;
 static unsigned show_n_contended_min = 0;
+static unsigned show_n_read_contended_min = 0;
+static unsigned show_n_owner_changed_min = 2;
 static unsigned show_n_max = 10;
 
 static bool raise_trap = false;
@@ -151,16 +161,22 @@ static uint64_t nsec_timestamp_setup;
 typedef enum {
         ORDER_ID = 0,
         ORDER_N_LOCKED,
-        ORDER_N_OWNER_CHANGED,
+        ORDER_N_READ_LOCKED,
         ORDER_N_CONTENDED,
+        ORDER_N_READ_CONTENDED,
+        ORDER_N_OWNER_CHANGED,
         ORDER_NSEC_LOCKED_TOTAL,
         ORDER_NSEC_LOCKED_MAX,
         ORDER_NSEC_LOCKED_AVG,
+        ORDER_NSEC_READ_LOCKED_TOTAL,
+        ORDER_NSEC_READ_LOCKED_MAX,
+        ORDER_NSEC_READ_LOCKED_AVG,
         ORDER_NSEC_CONTENDED_TOTAL,
         ORDER_NSEC_CONTENDED_AVG,
         ORDER_NSEC_READ_CONTENDED_TOTAL,
+        ORDER_NSEC_READ_CONTENDED_AVG,
 } SummaryOrder;
-#define ORDER_INVALID ORDER_NSEC_READ_CONTENDED_TOTAL + 1 /* first invalid order */
+#define ORDER_INVALID ORDER_NSEC_READ_CONTENDED_AVG + 1 /* first invalid order */
 
 typedef struct {
         const char *command; /* as passed to --order command line argument */
@@ -170,15 +186,21 @@ typedef struct {
 /* Must be kept in sync with SummaryOrder. */
 static const SummaryOrderDetails summary_order_details[] = {
         { "id", "mutex number" },
-        { "n-locked", "lock count" },
+        { "n-locked", "(write) lock count" },
+        { "n-read-locked", "(read) lock count" },
+        { "n-contended", "(write) contention count" },
+        { "n-read-contended", "(read) contention count" },
         { "n-owner-changed", "owner change count" },
-        { "n-contended", "contention count" },
-        { "nsec-locked-total", "total time locked" },
-        { "nsec-locked-max", "maximum time locked" },
-        { "nsec-locked-avg", "average time locked" },
-        { "nsec-contended-total", "total time contended" },
-        { "nsec-contended-avg", "average time contended" },
+        { "nsec-locked-total", "total time (write) locked" },
+        { "nsec-locked-max", "maximum time (write) locked" },
+        { "nsec-locked-avg", "average time (write) locked" },
+        { "nsec-read-locked-total", "total time (read) locked" },
+        { "nsec-read-locked-max", "maximum time (read) locked" },
+        { "nsec-read-locked-avg", "average time (read) locked" },
+        { "nsec-contended-total", "total time (write) contended" },
+        { "nsec-contended-avg", "average time (write) contended" },
         { "nsec-read-contended-total", "total time (read) contended" },
+        { "nsec-read-contended-avg", "average time (read) contended" },
 };
 
 static SummaryOrder summary_order = ORDER_N_CONTENDED;
@@ -372,17 +394,29 @@ static void setup(void) {
         else
                 show_n_locked_min = t;
 
-        t = show_n_owner_changed_min;
-        if (parse_env("MUTRACE_OWNER_CHANGED_MIN", &t) < 0)
-                fprintf(stderr, "mutrace: WARNING: Failed to parse $MUTRACE_OWNER_CHANGED_MIN.\n");
+        t = show_n_read_locked_min;
+        if (parse_env("MUTRACE_READ_LOCKED_MIN", &t) < 0)
+                fprintf(stderr, "mutrace: WARNING: Failed to parse $MUTRACE_READ_LOCKED_MIN.\n");
         else
-                show_n_owner_changed_min = t;
+                show_n_read_locked_min = t;
 
         t = show_n_contended_min;
         if (parse_env("MUTRACE_CONTENDED_MIN", &t) < 0)
                 fprintf(stderr, "mutrace: WARNING: Failed to parse $MUTRACE_CONTENDED_MIN.\n");
         else
                 show_n_contended_min = t;
+
+        t = show_n_read_contended_min;
+        if (parse_env("MUTRACE_READ_CONTENDED_MIN", &t) < 0)
+                fprintf(stderr, "mutrace: WARNING: Failed to parse $MUTRACE_READ_CONTENDED_MIN.\n");
+        else
+                show_n_read_contended_min = t;
+
+        t = show_n_owner_changed_min;
+        if (parse_env("MUTRACE_OWNER_CHANGED_MIN", &t) < 0)
+                fprintf(stderr, "mutrace: WARNING: Failed to parse $MUTRACE_OWNER_CHANGED_MIN.\n");
+        else
+                show_n_owner_changed_min = t;
 
         t = show_n_max;
         if (parse_env("MUTRACE_MAX", &t) < 0)
@@ -485,35 +519,36 @@ static int mutex_info_compare(const void *_a, const void *_b) {
                         if (a->lcase != b->lcase) \
                                 return a->lcase - b->lcase; \
                         break;
+                #define ORDER_CASE_AVG(UCASE, lcase, divisor) \
+                case ORDER_##UCASE: { \
+                        double a_avg = a->lcase / a->divisor, \
+                               b_avg = b->lcase / b->divisor; \
+                        if (!doubles_equal(a_avg, b_avg)) \
+                                return ((a_avg - b_avg) < 0.0) ? -1 : 1; \
+                        break; \
+                }
 
                 ORDER_CASE(ID, id)
-                ORDER_CASE(N_LOCKED, n_locked)
+                ORDER_CASE(N_LOCKED, n_locked[WRITE])
+                ORDER_CASE(N_READ_LOCKED, n_locked[READ])
+                ORDER_CASE(N_CONTENDED, n_contended[WRITE])
+                ORDER_CASE(N_READ_CONTENDED, n_contended[READ])
                 ORDER_CASE(N_OWNER_CHANGED, n_owner_changed)
-                ORDER_CASE(N_CONTENDED, n_contended)
-                ORDER_CASE(NSEC_LOCKED_TOTAL, nsec_locked_total)
-                ORDER_CASE(NSEC_LOCKED_MAX, nsec_locked_max)
-                ORDER_CASE(NSEC_CONTENDED_TOTAL, nsec_contended_total)
-                ORDER_CASE(NSEC_READ_CONTENDED_TOTAL, nsec_read_contended_total)
-                case ORDER_NSEC_LOCKED_AVG: {
-                        double a_avg = a->nsec_locked_total / a->n_locked,
-                               b_avg = b->nsec_locked_total / b->n_locked;
-
-                        if (!doubles_equal(a_avg, b_avg))
-                                return ((a_avg - b_avg) < 0.0) ? -1 : 1;
-                        break;
-                }
-                case ORDER_NSEC_CONTENDED_AVG: {
-                        double a_avg = a->nsec_contended_total / a->n_contended,
-                               b_avg = b->nsec_contended_total / b->n_contended;
-
-                        if (!doubles_equal(a_avg, b_avg))
-                                return ((a_avg - b_avg) < 0.0) ? -1 : 1;
-                        break;
-                }
+                ORDER_CASE(NSEC_LOCKED_TOTAL, nsec_locked_total[WRITE])
+                ORDER_CASE(NSEC_LOCKED_MAX, nsec_locked_max[WRITE])
+                ORDER_CASE_AVG(NSEC_LOCKED_AVG, nsec_locked_total[WRITE], n_locked[WRITE])
+                ORDER_CASE(NSEC_READ_LOCKED_TOTAL, nsec_locked_total[READ])
+                ORDER_CASE(NSEC_READ_LOCKED_MAX, nsec_locked_max[READ])
+                ORDER_CASE_AVG(NSEC_READ_LOCKED_AVG, nsec_locked_total[READ], n_locked[READ])
+                ORDER_CASE(NSEC_CONTENDED_TOTAL, nsec_contended_total[WRITE])
+                ORDER_CASE_AVG(NSEC_CONTENDED_AVG, nsec_contended_total[WRITE], n_contended[WRITE])
+                ORDER_CASE(NSEC_READ_CONTENDED_TOTAL, nsec_contended_total[READ])
+                ORDER_CASE_AVG(NSEC_READ_CONTENDED_AVG, nsec_contended_total[READ], n_contended[READ])
                 default:
                         /* Should never be reached. */
                         assert(0);
 
+                #undef ORDER_CASE_AVG
                 #undef ORDER_CASE
         }
 
@@ -522,10 +557,10 @@ static int mutex_info_compare(const void *_a, const void *_b) {
         if (a->lcase != b->lcase) \
                 return a->lcase - b->lcase
 
-        STATIC_ORDER(n_contended);
+        STATIC_ORDER(n_contended[WRITE]);
         STATIC_ORDER(n_owner_changed);
-        STATIC_ORDER(n_locked);
-        STATIC_ORDER(nsec_locked_max);
+        STATIC_ORDER(n_locked[WRITE]);
+        STATIC_ORDER(nsec_locked_max[WRITE]);
 
         #undef STATIC_ORDER
 
@@ -539,13 +574,19 @@ static bool mutex_info_show(struct mutex_info *mi) {
         if (mi->realtime)
                 return true;
 
-        if (mi->n_locked < show_n_locked_min)
+        if (mi->n_locked[WRITE] < show_n_locked_min)
+                return false;
+
+        if (mi->n_locked[READ] < show_n_read_locked_min)
+                return false;
+
+        if (mi->n_contended[WRITE] < show_n_contended_min)
+                return false;
+
+        if (mi->n_contended[READ] < show_n_read_contended_min)
                 return false;
 
         if (mi->n_owner_changed < show_n_owner_changed_min)
-                return false;
-
-        if (mi->n_contended < show_n_contended_min)
                 return false;
 
         return true;
@@ -630,18 +671,30 @@ static bool mutex_info_stat(struct mutex_info *mi) {
         fprintf(stderr,
                 "%8u %8u %8u %8u %13.3f %12.3f %12.3f %c%c%c%c%c%c\n",
                 mi->id,
-                mi->n_locked,
+                mi->n_locked[WRITE],
                 mi->n_owner_changed,
-                mi->n_contended,
-                (double) mi->nsec_contended_total / 1000000.0,
-                (double) mi->nsec_locked_total / 1000000.0,
-                (double) mi->nsec_locked_total / mi->n_locked / 1000000.0,
+                mi->n_contended[WRITE],
+                (double) mi->nsec_contended_total[WRITE] / 1000000.0,
+                (double) mi->nsec_locked_total[WRITE] / 1000000.0,
+                (double) mi->nsec_locked_total[WRITE] / mi->n_locked[WRITE] / 1000000.0,
                 mi->mutex ? 'M' : 'W',
                 mi->broken ? '!' : (mi->dead ? 'x' : '-'),
                 track_rt ? (mi->realtime ? 'R' : '-') : '.',
                 mi->mutex ? mutex_type_name(mi->type) : '.',
                 mi->mutex ? mutex_protocol_name(mi->protocol) : '.',
                 mi->rwlock ? rwlock_kind_name(mi->kind) : '.');
+
+        /* Show a second row for rwlocks, listing the statistics for read-only
+         * locks; the first row shows the statistics for write-only locks. */
+        if (mi->rwlock) {
+                fprintf(stderr,
+                        "         %8u          %8u %13.3f %12.3f %12.3f       \n",
+                        mi->n_locked[READ],
+                        mi->n_contended[READ],
+                        (double) mi->nsec_contended_total[READ] / 1000000.0,
+                        (double) mi->nsec_locked_total[READ] / 1000000.0,
+                        (double) mi->nsec_locked_total[READ] / mi->n_locked[READ] / 1000000.0);
+        }
 
         return true;
 }
@@ -737,7 +790,9 @@ static void show_summary_internal(void) {
                         "             Use:                                  R = used in realtime thread /||\n"
                         "      Mutex Type:                   r = RECURSIVE, e = ERRORCHECK, a = ADAPTIVE /|\n"
                         "  Mutex Protocol:                                       i = INHERIT, p = PROTECT /\n"
-                        "     RWLock Kind:  r = PREFER_READER, w = PREFER_WRITER, W = PREFER_WRITER_NONREC \n");
+                        "     RWLock Kind:  r = PREFER_READER, w = PREFER_WRITER, W = PREFER_WRITER_NONREC \n"
+                        "\n"
+                        "mutrace: Note that rwlocks are shown as two lines: write locks then read locks.\n");
 
                 if (!track_rt)
                         fprintf(stderr,
@@ -1114,11 +1169,11 @@ static void mutex_lock(pthread_mutex_t *mutex, bool busy, uint64_t nsec_contende
         }
 
         mi->n_lock_level++;
-        mi->n_locked++;
+        mi->n_locked[WRITE]++;
 
         if (busy) {
-                mi->n_contended++;
-                mi->nsec_contended_total += nsec_contended;
+                mi->n_contended[WRITE]++;
+                mi->nsec_contended_total[WRITE] += nsec_contended;
         }
 
         tid = _gettid();
@@ -1132,7 +1187,7 @@ static void mutex_lock(pthread_mutex_t *mutex, bool busy, uint64_t nsec_contende
         if (track_rt && !mi->realtime && is_realtime())
                 mi->realtime = true;
 
-        mi->nsec_timestamp = nsec_now();
+        mi->nsec_timestamp[WRITE] = nsec_now();
 
         mutex_info_release(mutex);
         recursive = false;
@@ -1247,11 +1302,11 @@ static void mutex_unlock(pthread_mutex_t *mutex) {
 
         mi->n_lock_level--;
 
-        t = nsec_now() - mi->nsec_timestamp;
-        mi->nsec_locked_total += t;
+        t = nsec_now() - mi->nsec_timestamp[WRITE];
+        mi->nsec_locked_total[WRITE] += t;
 
-        if (t > mi->nsec_locked_max)
-                mi->nsec_locked_max = t;
+        if (t > mi->nsec_locked_max[WRITE])
+                mi->nsec_locked_max[WRITE] = t;
 
         mutex_info_release(mutex);
         recursive = false;
@@ -1485,7 +1540,7 @@ int pthread_rwlock_destroy(pthread_rwlock_t *rwlock) {
         return real_pthread_rwlock_destroy(rwlock);
 }
 
-static void rwlock_lock(pthread_rwlock_t *rwlock, bool for_write, bool busy, uint64_t nsec_contended) {
+static void rwlock_lock(pthread_rwlock_t *rwlock, LockType lock_type, bool busy, uint64_t nsec_contended) {
         struct mutex_info *mi;
         pid_t tid;
 
@@ -1495,7 +1550,7 @@ static void rwlock_lock(pthread_rwlock_t *rwlock, bool for_write, bool busy, uin
         recursive = true;
         mi = rwlock_info_acquire(rwlock);
 
-        if (mi->n_lock_level > 0 && for_write) {
+        if (mi->n_lock_level > 0 && lock_type == WRITE) {
                 __sync_fetch_and_add(&n_broken, 1);
                 mi->broken = true;
 
@@ -1504,15 +1559,12 @@ static void rwlock_lock(pthread_rwlock_t *rwlock, bool for_write, bool busy, uin
         }
 
         mi->n_lock_level++;
-        mi->n_locked++;
+        mi->lock_type = lock_type;
+        mi->n_locked[lock_type]++;
 
         if (busy) {
-                mi->n_contended++;
-
-                if (for_write)
-                        mi->nsec_write_contended_total += nsec_contended;
-                else
-                        mi->nsec_read_contended_total += nsec_contended;
+                mi->n_contended[lock_type]++;
+                mi->nsec_contended_total[lock_type] += nsec_contended;
         }
 
         tid = _gettid();
@@ -1526,7 +1578,13 @@ static void rwlock_lock(pthread_rwlock_t *rwlock, bool for_write, bool busy, uin
         if (track_rt && !mi->realtime && is_realtime())
                 mi->realtime = true;
 
-        mi->nsec_timestamp = nsec_now();
+        /* Since multiple readers can hold the rwlock concurrently, we don't
+         * want subsequent readers overwriting our timestamp; or we'll record
+         * the wrong total locked time. Consequently, for read locks, we only
+         * handle nsec_timestamp when the lock level is transitioning 0 → 1
+         * or 1 → 0. */
+        if (lock_type != READ || mi->n_lock_level == 1)
+                mi->nsec_timestamp[lock_type] = nsec_now();
 
         rwlock_info_release(rwlock);
         recursive = false;
@@ -1561,7 +1619,7 @@ int pthread_rwlock_rdlock(pthread_rwlock_t *rwlock) {
                         return r;
         }
 
-        rwlock_lock(rwlock, false, busy, wait_time);
+        rwlock_lock(rwlock, READ, busy, wait_time);
         return r;
 }
 
@@ -1579,7 +1637,7 @@ int pthread_rwlock_tryrdlock(pthread_rwlock_t *rwlock) {
         if (UNLIKELY(r != EBUSY && r != 0))
                 return r;
 
-        rwlock_lock(rwlock, false, false, 0);
+        rwlock_lock(rwlock, READ, false, 0);
         return r;
 }
 
@@ -1612,7 +1670,7 @@ int pthread_rwlock_timedrdlock(pthread_rwlock_t *rwlock, const struct timespec *
                         return r;
         }
 
-        rwlock_lock(rwlock, false, busy, wait_time);
+        rwlock_lock(rwlock, READ, busy, wait_time);
         return r;
 }
 
@@ -1645,7 +1703,7 @@ int pthread_rwlock_wrlock(pthread_rwlock_t *rwlock) {
                         return r;
         }
 
-        rwlock_lock(rwlock, true, busy, wait_time);
+        rwlock_lock(rwlock, WRITE, busy, wait_time);
         return r;
 }
 
@@ -1663,7 +1721,7 @@ int pthread_rwlock_trywrlock(pthread_rwlock_t *rwlock) {
         if (UNLIKELY(r != EBUSY && r != 0))
                 return r;
 
-        rwlock_lock(rwlock, true, false, 0);
+        rwlock_lock(rwlock, WRITE, false, 0);
         return r;
 }
 
@@ -1696,13 +1754,14 @@ int pthread_rwlock_timedwrlock(pthread_rwlock_t *rwlock, const struct timespec *
                         return r;
         }
 
-        rwlock_lock(rwlock, true, busy, wait_time);
+        rwlock_lock(rwlock, WRITE, busy, wait_time);
         return r;
 }
 
 static void rwlock_unlock(pthread_rwlock_t *rwlock) {
         struct mutex_info *mi;
         uint64_t t;
+        LockType lock_type;
 
         if (UNLIKELY(!initialized || recursive))
                 return;
@@ -1720,11 +1779,17 @@ static void rwlock_unlock(pthread_rwlock_t *rwlock) {
 
         mi->n_lock_level--;
 
-        t = nsec_now() - mi->nsec_timestamp;
-        mi->nsec_locked_total += t;
+        lock_type = mi->lock_type;
 
-        if (t > mi->nsec_locked_max)
-                mi->nsec_locked_max = t;
+        /* See the note in rwlock_lock(). We don't want to count the locked time
+         * multiple times for concurrently-held read locks. */
+        if (lock_type != READ || mi->n_lock_level == 0) {
+                t = nsec_now() - mi->nsec_timestamp[lock_type];
+                mi->nsec_locked_total[lock_type] += t;
+        }
+
+        if (t > mi->nsec_locked_max[lock_type])
+                mi->nsec_locked_max[lock_type] = t;
 
         rwlock_info_release(rwlock);
         recursive = false;
