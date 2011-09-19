@@ -97,7 +97,7 @@ AC_CHECK_FUNCS([clock_gettime])
 
 AC_SYS_LARGEFILE
 
-ACX_PTHREAD
+AX_PTHREAD
 
 ###################################
 #            Output               #
