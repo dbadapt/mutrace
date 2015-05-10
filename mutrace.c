@@ -2358,7 +2358,7 @@ int pthread_rwlock_timedwrlock(pthread_rwlock_t *rwlock, const struct timespec *
 
 static void rwlock_unlock(pthread_rwlock_t *rwlock) {
         struct mutex_info *mi;
-        uint64_t t;
+        uint64_t t=0;
         LockType lock_type;
 
         if (UNLIKELY(!initialized || recursive))
